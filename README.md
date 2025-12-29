@@ -14,7 +14,13 @@ This is a Bun monorepo with the following packages:
 ov-mcp/
 ├── packages/
 │   ├── mcp-server/          # MCP server implementation
-│   └── gtfs-parser/         # GTFS data parsing utilities
+│   ├── gtfs-parser/         # GTFS data parsing utilities
+│   └── cloudflare-worker/   # Cloudflare Workers deployment
+├── docs/
+│   └── CLOUDFLARE_DEPLOYMENT.md  # Cloudflare deployment guide
+├── .github/workflows/
+│   └── deploy-cloudflare.yml     # Automated deployment workflow
+├── wrangler.toml            # Cloudflare Workers configuration
 ├── package.json             # Root workspace configuration
 └── tsconfig.json           # Shared TypeScript configuration
 ```
@@ -23,10 +29,12 @@ ov-mcp/
 
 - **@ov-mcp/server**: MCP server that exposes public transport tools
 - **@ov-mcp/gtfs-parser**: GTFS parser and query utilities for transit data
+- **@ov-mcp/cloudflare-worker**: Cloudflare Workers runtime for edge deployment
 
 ## Prerequisites
 
 - [Bun](https://bun.sh) v1.0.0 or higher
+- (Optional) [Cloudflare account](https://cloudflare.com) for production deployment
 
 ## Getting Started
 
@@ -50,6 +58,9 @@ bun run dev
 # Build all packages
 bun run build
 
+# Build Cloudflare Worker specifically
+bun run build:worker
+
 # Run tests
 bun run test
 
@@ -60,9 +71,9 @@ bun run typecheck
 bun run clean
 ```
 
-## Usage
+## Deployment Options
 
-### MCP Server
+### Local Development (MCP Server)
 
 Configure the MCP server in your MCP client (e.g., Claude Desktop):
 
@@ -77,7 +88,29 @@ Configure the MCP server in your MCP client (e.g., Claude Desktop):
 }
 ```
 
-### Available Tools
+### Cloudflare Workers (Production)
+
+Deploy to Cloudflare Workers for global edge deployment with automatic scaling:
+
+```bash
+# Deploy to staging
+cd packages/cloudflare-worker
+bun run deploy:staging
+
+# Deploy to production
+bun run deploy:production
+```
+
+**Complete deployment guide**: See [docs/CLOUDFLARE_DEPLOYMENT.md](docs/CLOUDFLARE_DEPLOYMENT.md)
+
+**Features:**
+- ✅ Global edge deployment
+- ✅ Automatic scaling
+- ✅ KV storage for GTFS data caching
+- ✅ GitHub Actions CI/CD
+- ✅ Multi-environment support (staging/production)
+
+## Available Tools
 
 - `get_stops`: Search for public transport stops in the Netherlands
 
@@ -99,6 +132,7 @@ MIT
 
 ## Roadmap
 
+- [x] Cloudflare Workers deployment support
 - [ ] GTFS data integration
 - [ ] Real-time departure information
 - [ ] Route planning
@@ -110,3 +144,4 @@ MIT
 
 - [Model Context Protocol](https://modelcontextprotocol.io)
 - [GTFS Specification](https://gtfs.org)
+- [Cloudflare Workers](https://workers.cloudflare.com)
