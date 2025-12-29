@@ -7,6 +7,15 @@ node_compat = false
 [ai]
 binding = "AI"
 
+# Durable Objects for MCP Agent (Cloudflare Agents SDK)
+[[durable_objects.bindings]]
+name = "OV_MCP"
+class_name = "OVMcpAgent"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["OVMcpAgent"]
+
 # KV Namespaces for caching GTFS data
 [[kv_namespaces]]
 binding = "GTFS_CACHE"

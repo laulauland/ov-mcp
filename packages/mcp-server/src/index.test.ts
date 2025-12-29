@@ -31,7 +31,7 @@ describe('OV-MCP Server Integration', () => {
 
   test('server should output initialization message', async () => {
     const serverPath = resolve(__dirname, 'index.ts');
-    
+
     const proc = spawn(['bun', 'run', serverPath], {
       stdout: 'pipe',
       stderr: 'pipe',
@@ -40,17 +40,26 @@ describe('OV-MCP Server Integration', () => {
     // Collect stderr output
     let output = '';
     const reader = proc.stderr.getReader();
-    const timeout = setTimeout(() => {
-      proc.kill();
-    }, 5000);
+    const startTime = Date.now();
+    const maxWait = 5000;
 
     try {
-      const { value } = await reader.read();
-      if (value) {
-        output = new TextDecoder().decode(value);
+      // Read multiple chunks until we find the expected message or timeout
+      while (Date.now() - startTime < maxWait) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((resolve) =>
+            setTimeout(() => resolve({ value: undefined, done: true }), 500)
+          ),
+        ]);
+        if (value) {
+          output += new TextDecoder().decode(value);
+        }
+        if (done || output.includes('OV-MCP Server running on stdio')) {
+          break;
+        }
       }
     } finally {
-      clearTimeout(timeout);
       proc.kill();
     }
 

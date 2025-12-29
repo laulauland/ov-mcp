@@ -315,6 +315,28 @@ export function getStopById(stops: GTFSStop[], stopId: string): GTFSStop | undef
 }
 
 /**
+ * Find stops near a coordinate
+ */
+export function findStopsNear(
+  stops: GTFSStop[],
+  lat: number,
+  lon: number,
+  radiusKm: number = 1,
+  limit: number = 10
+): GTFSStop[] {
+  const stopsWithDistance = stops.map(stop => ({
+    stop,
+    distance: haversineDistance(lat, lon, stop.stop_lat, stop.stop_lon),
+  }));
+
+  return stopsWithDistance
+    .filter(({ distance }) => distance <= radiusKm)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, limit)
+    .map(({ stop }) => stop);
+}
+
+/**
  * Get routes serving a stop
  */
 export function getRoutesForStop(
