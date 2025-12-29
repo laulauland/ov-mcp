@@ -1,0 +1,15 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/mcp-config.json",
+  "mcpServers": {
+    "ov-mcp": {
+      "command": "bun",
+      "args": [
+        "run",
+        "/absolute/path/to/ov-mcp/packages/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "DEBUG": "false"
+      }
+    }
+  }
+}
