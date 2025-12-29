@@ -1,0 +1,27 @@
+# GTFS Parsing and Journey Planning Dependencies
+
+# Core dependencies
+requests>=2.31.0        # HTTP library for downloading GTFS data
+pandas>=2.0.0           # Data manipulation and CSV parsing
+numpy>=1.24.0           # Numerical operations (pandas dependency)
+
+# Graph algorithms for journey planning
+networkx>=3.0           # Graph data structures and algorithms
+
+# Fuzzy string matching for station name search
+fuzzywuzzy>=0.18.0      # Fuzzy string matching
+python-Levenshtein>=0.21.0  # Fast string matching (optional but recommended)
+
+# Date/time handling
+python-dateutil>=2.8.2  # Date parsing and manipulation
+pytz>=2023.3            # Timezone support
+
+# Logging and utilities
+colorama>=0.4.6         # Colored terminal output (optional)
+tqdm>=4.65.0            # Progress bars (optional)
+
+# Development and testing (optional)
+# pytest>=7.4.0         # Testing framework
+# black>=23.0.0         # Code formatter
+# flake8>=6.0.0         # Linting
+# mypy>=1.4.0           # Type checking
