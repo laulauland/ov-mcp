@@ -1,6 +1,6 @@
 {
   "name": "@ov-mcp/gtfs-parser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -16,6 +16,21 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/node": "^20.10.0",
     "typescript": "^5.3.3"
-  }
+  },
+  "optionalDependencies": {
+    "protobufjs": "^7.2.5"
+  },
+  "description": "Comprehensive GTFS parser with streaming support, journey planning, fuzzy search, and realtime capabilities",
+  "keywords": [
+    "gtfs",
+    "transit",
+    "public-transport",
+    "amsterdam",
+    "netherlands",
+    "journey-planning",
+    "routing",
+    "realtime"
+  ]
 }
