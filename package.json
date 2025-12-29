@@ -1,0 +1,19 @@
+{
+  "name": "ov-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter '*' build",
+    "dev": "bun run --filter '*' dev",
+    "test": "bun test",
+    "typecheck": "bun run --filter '*' typecheck",
+    "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.3.3"
+  }
+}
