@@ -1,0 +1,41 @@
+name = "ov-mcp-server"
+main = "packages/cloudflare-worker/src/index.ts"
+compatibility_date = "2024-12-01"
+node_compat = true
+
+# Account ID - set via environment variable or CLI
+# account_id = ""
+
+# KV Namespaces for caching GTFS data
+[[kv_namespaces]]
+binding = "GTFS_CACHE"
+id = "${GTFS_CACHE_KV_ID}"
+preview_id = "${GTFS_CACHE_PREVIEW_KV_ID}"
+
+# Environment variables
+[env.production]
+name = "ov-mcp-server"
+vars = { ENVIRONMENT = "production" }
+
+[env.production.kv_namespaces]
+GTFS_CACHE = { id = "${GTFS_CACHE_KV_ID}" }
+
+[env.staging]
+name = "ov-mcp-server-staging"
+vars = { ENVIRONMENT = "staging" }
+
+[env.staging.kv_namespaces]
+GTFS_CACHE = { id = "${GTFS_CACHE_PREVIEW_KV_ID}" }
+
+# Build configuration
+[build]
+command = "bun run build:worker"
+
+# Observability
+[observability]
+enabled = true
+
+# Compatibility flags
+[compatibility_flags]
+# Enable modern JavaScript features
+compatibility_flags = ["nodejs_compat"]

@@ -7,7 +7,11 @@
   ],
   "scripts": {
     "build": "bun run --filter '*' build",
+    "build:worker": "cd packages/cloudflare-worker && bun run build",
     "dev": "bun run --filter '*' dev",
+    "dev:worker": "cd packages/cloudflare-worker && bun run dev",
+    "deploy:staging": "cd packages/cloudflare-worker && bun run deploy:staging",
+    "deploy:production": "cd packages/cloudflare-worker && bun run deploy:production",
     "test": "bun test",
     "typecheck": "bun run --filter '*' typecheck",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
