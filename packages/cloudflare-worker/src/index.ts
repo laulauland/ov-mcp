@@ -3,7 +3,8 @@
  * Handles HTTP requests and provides MCP server functionality
  */
 
-import { GTFSParser, GTFSQuery, GTFSFeed, GTFSStop, GTFSRoute } from '@ov-mcp/gtfs-parser';
+import type { GTFSFeed, GTFSStop, GTFSRoute } from './gtfs-static';
+import { searchStopsByName, getStopById, findStopsNear } from './gtfs-static';
 
 // Environment interface for Cloudflare Worker
 interface Env {
@@ -201,7 +202,7 @@ class HTTPTransport {
         };
       }
 
-      const stops = GTFSQuery.searchStopsByName(feed.stops, query, Math.min(limit, 100));
+      const stops = searchStopsByName(feed.stops, query, Math.min(limit, 100));
 
       if (stops.length === 0) {
         return {
@@ -263,7 +264,7 @@ class HTTPTransport {
         };
       }
 
-      const stop = GTFSQuery.getStopById(feed.stops, stop_id);
+      const stop = getStopById(feed.stops, stop_id);
 
       if (!stop) {
         return {
@@ -328,10 +329,10 @@ class HTTPTransport {
         };
       }
 
-      const stops = GTFSQuery.findStopsNear(
-        feed.stops, 
-        latitude, 
-        longitude, 
+      const stops = findStopsNear(
+        feed.stops,
+        latitude,
+        longitude,
         Math.min(radius_km, 10),
         Math.min(limit, 50)
       );
