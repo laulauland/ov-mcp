@@ -1,7 +1,7 @@
 name = "ov-mcp-server"
-main = "packages/cloudflare-worker/dist/index.js"
+main = "packages/cloudflare-worker/src/index.ts"
 compatibility_date = "2024-12-01"
-node_compat = false
+compatibility_flags = ["nodejs_compat"]
 
 # Workers AI binding for Cloudflare Agents
 [ai]
@@ -49,10 +49,6 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.staging.kv_namespaces]
 GTFS_CACHE = { id = "${GTFS_CACHE_PREVIEW_KV_ID}" }
-
-# Build configuration
-[build]
-command = "npm run build"
 
 # Observability
 [observability]
