@@ -1,10 +1,11 @@
 name = "ov-mcp-server"
-main = "packages/cloudflare-worker/src/index.ts"
+main = "packages/cloudflare-worker/dist/index.js"
 compatibility_date = "2024-12-01"
-node_compat = true
+node_compat = false
 
-# Account ID - set via environment variable or CLI
-# account_id = ""
+# Workers AI binding for Cloudflare Agents
+[ai]
+binding = "AI"
 
 # KV Namespaces for caching GTFS data
 [[kv_namespaces]]
@@ -12,7 +13,19 @@ binding = "GTFS_CACHE"
 id = "${GTFS_CACHE_KV_ID}"
 preview_id = "${GTFS_CACHE_PREVIEW_KV_ID}"
 
+# R2 bucket for storing large GTFS datasets (optional)
+# [[r2_buckets]]
+# binding = "GTFS_STORAGE"
+# bucket_name = "ov-mcp-gtfs"
+# preview_bucket_name = "ov-mcp-gtfs-preview"
+
 # Environment variables
+[vars]
+ENVIRONMENT = "development"
+GTFS_FEED_URL = "http://gtfs.ovapi.nl/gtfs-nl.zip"
+REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
+
+# Production environment
 [env.production]
 name = "ov-mcp-server"
 vars = { ENVIRONMENT = "production" }
@@ -20,6 +33,7 @@ vars = { ENVIRONMENT = "production" }
 [env.production.kv_namespaces]
 GTFS_CACHE = { id = "${GTFS_CACHE_KV_ID}" }
 
+# Staging environment
 [env.staging]
 name = "ov-mcp-server-staging"
 vars = { ENVIRONMENT = "staging" }
@@ -29,13 +43,10 @@ GTFS_CACHE = { id = "${GTFS_CACHE_PREVIEW_KV_ID}" }
 
 # Build configuration
 [build]
-command = "bun run build:worker"
+command = "npm run build"
 
 # Observability
 [observability]
 enabled = true
 
-# Compatibility flags
-[compatibility_flags]
-# Enable modern JavaScript features
-compatibility_flags = ["nodejs_compat"]
+# No compatibility flags needed - pure browser APIs
