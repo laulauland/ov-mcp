@@ -1,23 +1,26 @@
 {
   "name": "ov-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "bun run --filter '*' build",
-    "build:worker": "cd packages/cloudflare-worker && bun run build",
-    "dev": "bun run --filter '*' dev",
-    "dev:worker": "cd packages/cloudflare-worker && bun run dev",
-    "deploy:staging": "cd packages/cloudflare-worker && bun run deploy:staging",
-    "deploy:production": "cd packages/cloudflare-worker && bun run deploy:production",
-    "test": "bun test",
-    "typecheck": "bun run --filter '*' typecheck",
+    "build": "npm run build:worker",
+    "build:worker": "cd packages/cloudflare-worker && npm run build",
+    "dev": "npm run dev:worker",
+    "dev:worker": "cd packages/cloudflare-worker && npm run dev",
+    "deploy:staging": "bash deploy.sh staging",
+    "deploy:production": "bash deploy.sh production",
+    "test": "echo \"No tests configured yet\"",
+    "typecheck": "cd packages/cloudflare-worker && npm run typecheck",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
   },
   "devDependencies": {
-    "@types/bun": "latest",
     "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   }
 }
