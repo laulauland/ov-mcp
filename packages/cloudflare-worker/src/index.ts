@@ -16,7 +16,7 @@ const GTFS_METADATA_KEY = 'gtfs:metadata:v1';
 
 // Environment interface for Cloudflare Worker
 export interface Env {
-  GTFS_CACHE: KVNamespace;
+  GTFS_CACHE?: KVNamespace; // Optional - must be configured with actual KV namespace ID
   OV_MCP: DurableObjectNamespace<OVMcpAgent>;
   ENVIRONMENT?: string;
   GTFS_UPDATE_SECRET?: string;
@@ -254,6 +254,11 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
    * Get GTFS data from KV cache
    */
   private async getGTFSData(): Promise<GTFSFeed | null> {
+    if (!this.env.GTFS_CACHE) {
+      console.error('GTFS_CACHE KV namespace not configured');
+      return null;
+    }
+
     try {
       const cached = await this.env.GTFS_CACHE.get(GTFS_DATA_KEY, 'json');
       return cached as GTFSFeed | null;
@@ -270,13 +275,24 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
 async function handleAdminRequest(request: Request, env: Env, url: URL): Promise<Response | null> {
   // Health check endpoint
   if (url.pathname === '/health') {
-    const metadata = await env.GTFS_CACHE.get(GTFS_METADATA_KEY, 'json');
+    let metadata = null;
+    let kvConfigured = false;
+
+    if (env.GTFS_CACHE) {
+      kvConfigured = true;
+      try {
+        metadata = await env.GTFS_CACHE.get(GTFS_METADATA_KEY, 'json');
+      } catch (error) {
+        console.error('Error fetching metadata from KV:', error);
+      }
+    }
 
     return new Response(
       JSON.stringify({
         status: 'ok',
         environment: env.ENVIRONMENT || 'development',
         timestamp: new Date().toISOString(),
+        kv_configured: kvConfigured,
         gtfs_data_available: metadata !== null,
         gtfs_metadata: metadata,
       }),
@@ -289,6 +305,13 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
 
   // Admin endpoint to update GTFS cache (requires secret)
   if (url.pathname === '/admin/update-gtfs' && request.method === 'POST') {
+    if (!env.GTFS_CACHE) {
+      return new Response(
+        JSON.stringify({ error: 'GTFS_CACHE KV namespace not configured' }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const authHeader = request.headers.get('Authorization');
     const secret = env.GTFS_UPDATE_SECRET;
 

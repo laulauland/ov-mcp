@@ -17,16 +17,14 @@ tag = "v1"
 new_classes = ["OVMcpAgent"]
 
 # KV Namespaces for caching GTFS data
-[[kv_namespaces]]
-binding = "GTFS_CACHE"
-id = "${GTFS_CACHE_KV_ID}"
-preview_id = "${GTFS_CACHE_PREVIEW_KV_ID}"
-
-# R2 bucket for storing large GTFS datasets (optional)
-# [[r2_buckets]]
-# binding = "GTFS_STORAGE"
-# bucket_name = "ov-mcp-gtfs"
-# preview_bucket_name = "ov-mcp-gtfs-preview"
+# NOTE: You must create KV namespaces first via:
+#   wrangler kv:namespace create GTFS_CACHE
+#   wrangler kv:namespace create GTFS_CACHE --preview
+# Then replace the IDs below with the actual namespace IDs
+# [[kv_namespaces]]
+# binding = "GTFS_CACHE"
+# id = "<YOUR_KV_NAMESPACE_ID>"
+# preview_id = "<YOUR_PREVIEW_KV_NAMESPACE_ID>"
 
 # Environment variables
 [vars]
@@ -38,20 +36,20 @@ REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
 [env.production]
 name = "ov-mcp-server"
 vars = { ENVIRONMENT = "production" }
-
-[env.production.kv_namespaces]
-GTFS_CACHE = { id = "${GTFS_CACHE_KV_ID}" }
+# Uncomment and add your production KV namespace ID:
+# kv_namespaces = [
+#   { binding = "GTFS_CACHE", id = "<YOUR_PRODUCTION_KV_ID>" }
+# ]
 
 # Staging environment
 [env.staging]
 name = "ov-mcp-server-staging"
 vars = { ENVIRONMENT = "staging" }
-
-[env.staging.kv_namespaces]
-GTFS_CACHE = { id = "${GTFS_CACHE_PREVIEW_KV_ID}" }
+# Uncomment and add your staging KV namespace ID:
+# kv_namespaces = [
+#   { binding = "GTFS_CACHE", id = "<YOUR_STAGING_KV_ID>" }
+# ]
 
 # Observability
 [observability]
 enabled = true
-
-# No compatibility flags needed - pure browser APIs
