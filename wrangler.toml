@@ -29,7 +29,7 @@ REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
 
 # Scheduled triggers for automatic GTFS updates
 [triggers]
-crons = ["0 3 * * 0"]  # Every Sunday at 3am UTC
+crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 
 # Observability
 [observability]
