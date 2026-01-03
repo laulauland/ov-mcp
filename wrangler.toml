@@ -21,3 +21,8 @@ crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 # Observability
 [observability]
 enabled = true
+
+# Migrations to delete the old Durable Object class
+[[migrations]]
+tag = "v1"
+deleted_classes = ["OVMcpAgent"]
