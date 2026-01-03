@@ -3,19 +3,6 @@ main = "packages/cloudflare-worker/src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Workers AI binding for Cloudflare Agents
-[ai]
-binding = "AI"
-
-# Durable Objects for MCP Agent (Cloudflare Agents SDK)
-[[durable_objects.bindings]]
-name = "OV_MCP"
-class_name = "OVMcpAgent"
-
-[[migrations]]
-tag = "v1"
-new_classes = ["OVMcpAgent"]
-
 # KV Namespaces for caching GTFS data
 [[kv_namespaces]]
 binding = "GTFS_CACHE"
