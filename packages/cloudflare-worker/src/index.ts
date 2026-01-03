@@ -1,10 +1,10 @@
 /**
- * OV-MCP Server - Cloudflare Worker with Agents SDK
- * Dutch Public Transport MCP Server using Cloudflare Agents SDK
+ * OV-MCP Server - Cloudflare Worker
+ * Dutch Public Transport MCP Server using createMcpHandler
  */
 
-import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 
 import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, GTFSDownloader } from '@ov-mcp/gtfs-parser';
@@ -16,17 +16,14 @@ const GTFS_METADATA_KEY = 'gtfs:metadata:v1';
 
 // Environment interface for Cloudflare Worker
 export interface Env {
-  GTFS_CACHE?: KVNamespace; // Optional - must be configured with actual KV namespace ID
-  OV_MCP: DurableObjectNamespace<OVMcpAgent>;
+  GTFS_CACHE?: KVNamespace;
   ENVIRONMENT?: string;
   GTFS_UPDATE_SECRET?: string;
   GTFS_FEED_URL?: string;
 }
 
-// State for the MCP agent (can be extended for stateful operations)
-interface AgentState {
-  initialized: boolean;
-}
+// Global variable to store env for use in tools
+let globalEnv: Env | null = null;
 
 /**
  * Helper functions for formatting
@@ -88,187 +85,192 @@ function formatRoute(route: GTFSRoute) {
 }
 
 /**
- * OV-MCP Agent - Dutch Public Transport MCP Server
- * Extends McpAgent to provide GTFS data access tools
+ * Get GTFS data from KV cache
  */
-export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
-  server = new McpServer({
+async function getGTFSData(): Promise<GTFSFeed | null> {
+  if (!globalEnv?.GTFS_CACHE) {
+    console.error('GTFS_CACHE KV namespace not configured');
+    return null;
+  }
+
+  try {
+    const cached = await globalEnv.GTFS_CACHE.get(GTFS_DATA_KEY, 'json');
+    return cached as GTFSFeed | null;
+  } catch (error) {
+    console.error('Error fetching GTFS data from KV:', error);
+    return null;
+  }
+}
+
+/**
+ * Create the MCP Server with all tools registered
+ */
+function createServer(): McpServer {
+  const server = new McpServer({
     name: "ov-mcp",
     version: "0.2.0",
   });
 
-  initialState: AgentState = {
-    initialized: false,
-  };
+  // Tool: Search for stops by name
+  server.tool(
+    "get_stops",
+    "Search for public transport stops in the Netherlands by name. Returns stop details including coordinates, type, and accessibility info.",
+    {
+      query: z.string().describe("Search query for stop name (e.g., 'Amsterdam Centraal', 'Rotterdam')"),
+      limit: z.number().min(1).max(100).default(10).describe("Maximum number of results to return"),
+    },
+    async ({ query, limit }) => {
+      const feed = await getGTFSData();
 
-  /**
-   * Initialize the MCP server and register all tools
-   */
-  async init() {
-    // Tool: Search for stops by name
-    this.server.tool(
-      "get_stops",
-      "Search for public transport stops in the Netherlands by name. Returns stop details including coordinates, type, and accessibility info.",
-      {
-        query: z.string().describe("Search query for stop name (e.g., 'Amsterdam Centraal', 'Rotterdam')"),
-        limit: z.number().min(1).max(100).default(10).describe("Maximum number of results to return"),
-      },
-      async ({ query, limit }) => {
-        const feed = await this.getGTFSData();
-
-        if (!feed) {
-          return {
-            content: [{ type: "text", text: "GTFS data not available. Please ensure data is loaded into KV storage." }],
-          };
-        }
-
-        const stops = GTFSQuery.searchStopsByName(feed.stops, query, limit);
-
-        if (stops.length === 0) {
-          return {
-            content: [{ type: "text", text: `No stops found matching "${query}".` }],
-          };
-        }
-
-        const formattedStops = stops.map(formatStop);
+      if (!feed) {
         return {
-          content: [{
-            type: "text",
-            text: `Found ${stops.length} stop(s):\n\n${JSON.stringify(formattedStops, null, 2)}`
-          }],
+          content: [{ type: "text", text: "GTFS data not available. Please ensure data is loaded into KV storage." }],
         };
       }
-    );
 
-    // Tool: Get stop by ID
-    this.server.tool(
-      "get_stop_by_id",
-      "Get detailed information about a specific stop by its GTFS ID.",
-      {
-        stop_id: z.string().describe("The unique GTFS stop ID"),
-      },
-      async ({ stop_id }) => {
-        const feed = await this.getGTFSData();
+      const stops = GTFSQuery.searchStopsByName(feed.stops, query, limit);
 
-        if (!feed) {
-          return {
-            content: [{ type: "text", text: "GTFS data not available." }],
-          };
-        }
-
-        const stop = GTFSQuery.getStopById(feed.stops, stop_id);
-
-        if (!stop) {
-          return {
-            content: [{ type: "text", text: `Stop with ID "${stop_id}" not found.` }],
-          };
-        }
-
+      if (stops.length === 0) {
         return {
-          content: [{ type: "text", text: JSON.stringify(formatStop(stop), null, 2) }],
+          content: [{ type: "text", text: `No stops found matching "${query}".` }],
         };
       }
-    );
 
-    // Tool: Find stops nearby
-    this.server.tool(
-      "find_stops_nearby",
-      "Find public transport stops near a specific geographic coordinate within a given radius.",
-      {
-        latitude: z.number().min(-90).max(90).describe("Latitude coordinate"),
-        longitude: z.number().min(-180).max(180).describe("Longitude coordinate"),
-        radius_km: z.number().min(0.1).max(10).default(1).describe("Search radius in kilometers"),
-        limit: z.number().min(1).max(50).default(10).describe("Maximum number of results"),
-      },
-      async ({ latitude, longitude, radius_km, limit }) => {
-        const feed = await this.getGTFSData();
-
-        if (!feed) {
-          return {
-            content: [{ type: "text", text: "GTFS data not available." }],
-          };
-        }
-
-        const stops = GTFSQuery.findStopsNear(feed.stops, latitude, longitude, radius_km, limit);
-
-        if (stops.length === 0) {
-          return {
-            content: [{ type: "text", text: `No stops found within ${radius_km}km of (${latitude}, ${longitude}).` }],
-          };
-        }
-
-        const formattedStops = stops.map(formatStop);
-        return {
-          content: [{
-            type: "text",
-            text: `Found ${stops.length} stop(s) within ${radius_km}km:\n\n${JSON.stringify(formattedStops, null, 2)}`
-          }],
-        };
-      }
-    );
-
-    // Tool: Search routes
-    this.server.tool(
-      "get_routes",
-      "Search for public transport routes (lines) by name or number.",
-      {
-        query: z.string().describe("Search query for route name or number (e.g., 'Intercity', 'Bus 15', 'Tram 2')"),
-        limit: z.number().min(1).max(100).default(10).describe("Maximum number of results"),
-      },
-      async ({ query, limit }) => {
-        const feed = await this.getGTFSData();
-
-        if (!feed) {
-          return {
-            content: [{ type: "text", text: "GTFS data not available." }],
-          };
-        }
-
-        const lowerQuery = query.toLowerCase();
-        const routes = feed.routes
-          .filter(route =>
-            route.route_short_name.toLowerCase().includes(lowerQuery) ||
-            route.route_long_name.toLowerCase().includes(lowerQuery)
-          )
-          .slice(0, limit);
-
-        if (routes.length === 0) {
-          return {
-            content: [{ type: "text", text: `No routes found matching "${query}".` }],
-          };
-        }
-
-        const formattedRoutes = routes.map(formatRoute);
-        return {
-          content: [{
-            type: "text",
-            text: `Found ${routes.length} route(s):\n\n${JSON.stringify(formattedRoutes, null, 2)}`
-          }],
-        };
-      }
-    );
-
-    this.setState({ initialized: true });
-  }
-
-  /**
-   * Get GTFS data from KV cache
-   */
-  private async getGTFSData(): Promise<GTFSFeed | null> {
-    if (!this.env.GTFS_CACHE) {
-      console.error('GTFS_CACHE KV namespace not configured');
-      return null;
+      const formattedStops = stops.map(formatStop);
+      return {
+        content: [{
+          type: "text",
+          text: `Found ${stops.length} stop(s):\n\n${JSON.stringify(formattedStops, null, 2)}`
+        }],
+      };
     }
+  );
 
-    try {
-      const cached = await this.env.GTFS_CACHE.get(GTFS_DATA_KEY, 'json');
-      return cached as GTFSFeed | null;
-    } catch (error) {
-      console.error('Error fetching GTFS data from KV:', error);
-      return null;
+  // Tool: Get stop by ID
+  server.tool(
+    "get_stop_by_id",
+    "Get detailed information about a specific stop by its GTFS ID.",
+    {
+      stop_id: z.string().describe("The unique GTFS stop ID"),
+    },
+    async ({ stop_id }) => {
+      const feed = await getGTFSData();
+
+      if (!feed) {
+        return {
+          content: [{ type: "text", text: "GTFS data not available." }],
+        };
+      }
+
+      const stop = GTFSQuery.getStopById(feed.stops, stop_id);
+
+      if (!stop) {
+        return {
+          content: [{ type: "text", text: `Stop with ID "${stop_id}" not found.` }],
+        };
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(formatStop(stop), null, 2) }],
+      };
     }
-  }
+  );
+
+  // Tool: Find stops nearby
+  server.tool(
+    "find_stops_nearby",
+    "Find public transport stops near a specific geographic coordinate within a given radius.",
+    {
+      latitude: z.number().min(-90).max(90).describe("Latitude coordinate"),
+      longitude: z.number().min(-180).max(180).describe("Longitude coordinate"),
+      radius_km: z.number().min(0.1).max(10).default(1).describe("Search radius in kilometers"),
+      limit: z.number().min(1).max(50).default(10).describe("Maximum number of results"),
+    },
+    async ({ latitude, longitude, radius_km, limit }) => {
+      const feed = await getGTFSData();
+
+      if (!feed) {
+        return {
+          content: [{ type: "text", text: "GTFS data not available." }],
+        };
+      }
+
+      const stops = GTFSQuery.findStopsNear(feed.stops, latitude, longitude, radius_km, limit);
+
+      if (stops.length === 0) {
+        return {
+          content: [{ type: "text", text: `No stops found within ${radius_km}km of (${latitude}, ${longitude}).` }],
+        };
+      }
+
+      const formattedStops = stops.map(formatStop);
+      return {
+        content: [{
+          type: "text",
+          text: `Found ${stops.length} stop(s) within ${radius_km}km:\n\n${JSON.stringify(formattedStops, null, 2)}`
+        }],
+      };
+    }
+  );
+
+  // Tool: Search routes
+  server.tool(
+    "get_routes",
+    "Search for public transport routes (lines) by name or number.",
+    {
+      query: z.string().describe("Search query for route name or number (e.g., 'Intercity', 'Bus 15', 'Tram 2')"),
+      limit: z.number().min(1).max(100).default(10).describe("Maximum number of results"),
+    },
+    async ({ query, limit }) => {
+      const feed = await getGTFSData();
+
+      if (!feed) {
+        return {
+          content: [{ type: "text", text: "GTFS data not available." }],
+        };
+      }
+
+      const lowerQuery = query.toLowerCase();
+      const routes = feed.routes
+        .filter(route =>
+          route.route_short_name.toLowerCase().includes(lowerQuery) ||
+          route.route_long_name.toLowerCase().includes(lowerQuery)
+        )
+        .slice(0, limit);
+
+      if (routes.length === 0) {
+        return {
+          content: [{ type: "text", text: `No routes found matching "${query}".` }],
+        };
+      }
+
+      const formattedRoutes = routes.map(formatRoute);
+      return {
+        content: [{
+          type: "text",
+          text: `Found ${routes.length} route(s):\n\n${JSON.stringify(formattedRoutes, null, 2)}`
+        }],
+      };
+    }
+  );
+
+  return server;
 }
+
+// Create the MCP server instance
+const mcpServer = createServer();
+
+// Create the MCP handler using createMcpHandler from agents SDK
+const mcpHandler = createMcpHandler(mcpServer, {
+  route: "/mcp",
+  corsOptions: {
+    origin: '*',
+    headers: 'Content-Type, Accept, Authorization, mcp-session-id, MCP-Protocol-Version',
+    methods: 'GET, POST, DELETE, OPTIONS',
+    exposeHeaders: 'mcp-session-id',
+    maxAge: 86400,
+  },
+});
 
 /**
  * Admin endpoints handler
@@ -379,15 +381,15 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
   return null;
 }
 
-// Create the MCP server handler using the serve() method
-const mcpHandler = OVMcpAgent.serve("/mcp", { binding: "OV_MCP" });
-
 /**
- * Main Worker export using Cloudflare Agents SDK
+ * Main Worker export
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // Store env globally for tools to access
+    globalEnv = env;
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
@@ -396,7 +398,9 @@ export default {
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, mcp-session-id',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, mcp-session-id, MCP-Protocol-Version, Accept',
+          'Access-Control-Expose-Headers': 'mcp-session-id',
+          'Access-Control-Max-Age': '86400',
         },
       });
     }
@@ -407,9 +411,27 @@ export default {
       return adminResponse;
     }
 
-    // Route MCP requests through the proper serve handler
-    if (url.pathname.startsWith('/mcp')) {
-      return mcpHandler.fetch(request, env, ctx);
+    // Route MCP requests through the createMcpHandler
+    if (url.pathname === '/mcp') {
+      try {
+        return await mcpHandler(request, env, ctx);
+      } catch (error) {
+        console.error('MCP handler error:', error);
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32603,
+              message: error instanceof Error ? error.message : 'Internal server error',
+            },
+            id: null,
+          }),
+          {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      }
     }
 
     return new Response('Not Found', { status: 404 });
