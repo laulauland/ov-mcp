@@ -17,11 +17,9 @@ tag = "v1"
 new_classes = ["OVMcpAgent"]
 
 # KV Namespaces for caching GTFS data
-# Create with: npx wrangler kv:namespace create GTFS_CACHE
-# Then uncomment and add the ID below:
-# [[kv_namespaces]]
-# binding = "GTFS_CACHE"
-# id = "<YOUR_KV_NAMESPACE_ID>"
+[[kv_namespaces]]
+binding = "GTFS_CACHE"
+id = "f1f8a39a19554b9fa733b48a1cb136c9"
 
 # Environment variables
 [vars]
