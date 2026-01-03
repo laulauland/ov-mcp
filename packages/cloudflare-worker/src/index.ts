@@ -362,10 +362,13 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
         mcp_endpoint: '/mcp',
         endpoints: {
           health: 'GET /health',
-          mcp: '/mcp (MCP protocol via Cloudflare Agents SDK)',
+          mcp: 'POST /mcp (MCP protocol via Streamable HTTP transport)',
           admin: {
             update: 'POST /admin/update-gtfs (requires Authorization header)',
           },
+        },
+        transports: {
+          streamable_http: '/mcp (recommended)',
         },
         documentation: 'https://github.com/laulauland/ov-mcp',
       }),
@@ -375,6 +378,9 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
 
   return null;
 }
+
+// Create the MCP server handler using the serve() method
+const mcpHandler = OVMcpAgent.serve("/mcp", { binding: "OV_MCP" });
 
 /**
  * Main Worker export using Cloudflare Agents SDK
@@ -389,8 +395,8 @@ export default {
         status: 204,
         headers: {
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, mcp-session-id',
         },
       });
     }
@@ -401,12 +407,9 @@ export default {
       return adminResponse;
     }
 
-    // Route MCP requests to the Durable Object
+    // Route MCP requests through the proper serve handler
     if (url.pathname.startsWith('/mcp')) {
-      // Get or create a Durable Object instance for MCP
-      const id = env.OV_MCP.idFromName("default");
-      const stub = env.OV_MCP.get(id);
-      return stub.fetch(request);
+      return mcpHandler.fetch(request, env, ctx);
     }
 
     return new Response('Not Found', { status: 404 });
