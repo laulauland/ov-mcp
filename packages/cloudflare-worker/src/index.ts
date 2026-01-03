@@ -22,7 +22,6 @@ const GTFS_METADATA_KEY = 'gtfs:metadata:v1';
 export interface Env {
   GTFS_CACHE?: KVNamespace;
   ENVIRONMENT?: string;
-  GTFS_UPDATE_SECRET?: string;
   GTFS_FEED_URL?: string;
 }
 
@@ -278,9 +277,9 @@ const mcpHandler = createMcpHandler(mcpServer, {
 });
 
 /**
- * Admin endpoints handler
+ * Utility endpoints handler (health check and API info)
  */
-async function handleAdminRequest(request: Request, env: Env, url: URL): Promise<Response | null> {
+async function handleUtilityRequest(request: Request, env: Env, url: URL): Promise<Response | null> {
   // Health check endpoint
   if (url.pathname === '/health') {
     let metadata = null;
@@ -311,54 +310,6 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
     );
   }
 
-  // Admin endpoint to update GTFS cache (requires secret)
-  if (url.pathname === '/admin/update-gtfs' && request.method === 'POST') {
-    if (!env.GTFS_CACHE) {
-      return new Response(
-        JSON.stringify({ error: 'GTFS_CACHE KV namespace not configured' }),
-        { status: 503, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const authHeader = request.headers.get('Authorization');
-    const secret = env.GTFS_UPDATE_SECRET;
-
-    if (secret && authHeader !== `Bearer ${secret}`) {
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const data = await request.json() as GTFSFeed;
-
-    if (!data.stops || !data.routes) {
-      return new Response(
-        JSON.stringify({ error: 'Invalid GTFS data structure' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    await env.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(data), {
-      expirationTtl: CACHE_TTL,
-    });
-
-    const metadata = {
-      lastUpdated: new Date().toISOString(),
-      stopCount: data.stops.length,
-      routeCount: data.routes.length,
-      tripCount: data.trips?.length || 0,
-    };
-    await env.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
-      expirationTtl: CACHE_TTL,
-    });
-
-    return new Response(
-      JSON.stringify({ success: true, message: 'GTFS data updated', metadata }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
-    );
-  }
-
   // Root path - API info
   if (url.pathname === '/') {
     return new Response(
@@ -370,9 +321,6 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
         endpoints: {
           health: 'GET /health',
           mcp: 'POST /mcp (MCP protocol via Streamable HTTP transport)',
-          admin: {
-            update: 'POST /admin/update-gtfs (requires Authorization header)',
-          },
         },
         transports: {
           streamable_http: '/mcp (recommended)',
@@ -410,10 +358,10 @@ export default {
       });
     }
 
-    // Check for admin/utility endpoints first
-    const adminResponse = await handleAdminRequest(request, env, url);
-    if (adminResponse) {
-      return adminResponse;
+    // Check for utility endpoints first (health, root)
+    const utilityResponse = await handleUtilityRequest(request, env, url);
+    if (utilityResponse) {
+      return utilityResponse;
     }
 
     // Route MCP requests through createMcpHandler
