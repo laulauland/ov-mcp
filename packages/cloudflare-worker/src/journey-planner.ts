@@ -3,8 +3,7 @@
  * Handles real-time updates and multi-modal transport
  */
 
-import type { GTFSFeed, GTFSStop, GTFSStopTime, GTFSTrip, GTFSRoute } from './gtfs-static';
-import { haversineDistance, isServiceActive } from './gtfs-static';
+import { GTFSFeed, GTFSStop, GTFSStopTime, GTFSTrip, GTFSRoute, haversineDistance, isServiceActive } from '@ov-mcp/gtfs-parser';
 import type { GtfsRealtimeFeed } from './gtfs-realtime';
 import { getStopDelays } from './gtfs-realtime';
 

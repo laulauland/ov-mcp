@@ -7,8 +7,7 @@ import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import type { GTFSFeed, GTFSStop, GTFSRoute } from './gtfs-static';
-import { searchStopsByName, getStopById, findStopsNear } from './gtfs-static';
+import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, GTFSDownloader } from '@ov-mcp/gtfs-parser';
 
 // Cache configuration
 const CACHE_TTL = 60 * 60 * 24; // 24 hours in seconds
@@ -17,10 +16,11 @@ const GTFS_METADATA_KEY = 'gtfs:metadata:v1';
 
 // Environment interface for Cloudflare Worker
 export interface Env {
-  GTFS_CACHE: KVNamespace;
+  GTFS_CACHE?: KVNamespace; // Optional - must be configured with actual KV namespace ID
   OV_MCP: DurableObjectNamespace<OVMcpAgent>;
   ENVIRONMENT?: string;
   GTFS_UPDATE_SECRET?: string;
+  GTFS_FEED_URL?: string;
 }
 
 // State for the MCP agent (can be extended for stateful operations)
@@ -122,7 +122,7 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
           };
         }
 
-        const stops = searchStopsByName(feed.stops, query, limit);
+        const stops = GTFSQuery.searchStopsByName(feed.stops, query, limit);
 
         if (stops.length === 0) {
           return {
@@ -156,7 +156,7 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
           };
         }
 
-        const stop = getStopById(feed.stops, stop_id);
+        const stop = GTFSQuery.getStopById(feed.stops, stop_id);
 
         if (!stop) {
           return {
@@ -189,7 +189,7 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
           };
         }
 
-        const stops = findStopsNear(feed.stops, latitude, longitude, radius_km, limit);
+        const stops = GTFSQuery.findStopsNear(feed.stops, latitude, longitude, radius_km, limit);
 
         if (stops.length === 0) {
           return {
@@ -255,6 +255,11 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
    * Get GTFS data from KV cache
    */
   private async getGTFSData(): Promise<GTFSFeed | null> {
+    if (!this.env.GTFS_CACHE) {
+      console.error('GTFS_CACHE KV namespace not configured');
+      return null;
+    }
+
     try {
       const cached = await this.env.GTFS_CACHE.get(GTFS_DATA_KEY, 'json');
       return cached as GTFSFeed | null;
@@ -271,13 +276,24 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
 async function handleAdminRequest(request: Request, env: Env, url: URL): Promise<Response | null> {
   // Health check endpoint
   if (url.pathname === '/health') {
-    const metadata = await env.GTFS_CACHE.get(GTFS_METADATA_KEY, 'json');
+    let metadata = null;
+    let kvConfigured = false;
+
+    if (env.GTFS_CACHE) {
+      kvConfigured = true;
+      try {
+        metadata = await env.GTFS_CACHE.get(GTFS_METADATA_KEY, 'json');
+      } catch (error) {
+        console.error('Error fetching metadata from KV:', error);
+      }
+    }
 
     return new Response(
       JSON.stringify({
         status: 'ok',
         environment: env.ENVIRONMENT || 'development',
         timestamp: new Date().toISOString(),
+        kv_configured: kvConfigured,
         gtfs_data_available: metadata !== null,
         gtfs_metadata: metadata,
       }),
@@ -290,6 +306,13 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
 
   // Admin endpoint to update GTFS cache (requires secret)
   if (url.pathname === '/admin/update-gtfs' && request.method === 'POST') {
+    if (!env.GTFS_CACHE) {
+      return new Response(
+        JSON.stringify({ error: 'GTFS_CACHE KV namespace not configured' }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const authHeader = request.headers.get('Authorization');
     const secret = env.GTFS_UPDATE_SECRET;
 
@@ -387,5 +410,50 @@ export default {
     }
 
     return new Response('Not Found', { status: 404 });
+  },
+
+  /**
+   * Scheduled handler for automatic GTFS data updates
+   * Triggered by cron: every Sunday at 3am UTC
+   */
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log('Scheduled GTFS update triggered at:', new Date(event.scheduledTime).toISOString());
+
+    if (!env.GTFS_CACHE) {
+      console.error('GTFS_CACHE KV namespace not configured - skipping scheduled update');
+      return;
+    }
+
+    try {
+      // Download and parse fresh GTFS data
+      const feedUrl = env.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
+      console.log('Downloading GTFS data from:', feedUrl);
+
+      const feed = await GTFSDownloader.fetchAndParse(feedUrl);
+      console.log(`Downloaded: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips`);
+
+      // Store in KV
+      await env.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
+        expirationTtl: CACHE_TTL * 7, // 7 days for scheduled updates
+      });
+
+      // Update metadata
+      const metadata = {
+        lastUpdated: new Date().toISOString(),
+        stopCount: feed.stops.length,
+        routeCount: feed.routes.length,
+        tripCount: feed.trips.length,
+        agencyCount: feed.agencies.length,
+        triggeredBy: 'scheduled',
+      };
+      await env.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
+        expirationTtl: CACHE_TTL * 7,
+      });
+
+      console.log('GTFS data updated successfully:', metadata);
+    } catch (error) {
+      console.error('Failed to update GTFS data:', error);
+      throw error; // Re-throw to mark the scheduled event as failed
+    }
   },
 };

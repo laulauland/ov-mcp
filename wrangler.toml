@@ -1,4 +1,4 @@
-name = "ov-mcp-server"
+name = "ov-mcp"
 main = "packages/cloudflare-worker/src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
@@ -19,39 +19,18 @@ new_classes = ["OVMcpAgent"]
 # KV Namespaces for caching GTFS data
 [[kv_namespaces]]
 binding = "GTFS_CACHE"
-id = "${GTFS_CACHE_KV_ID}"
-preview_id = "${GTFS_CACHE_PREVIEW_KV_ID}"
-
-# R2 bucket for storing large GTFS datasets (optional)
-# [[r2_buckets]]
-# binding = "GTFS_STORAGE"
-# bucket_name = "ov-mcp-gtfs"
-# preview_bucket_name = "ov-mcp-gtfs-preview"
+id = "f1f8a39a19554b9fa733b48a1cb136c9"
 
 # Environment variables
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
 GTFS_FEED_URL = "http://gtfs.ovapi.nl/gtfs-nl.zip"
 REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
 
-# Production environment
-[env.production]
-name = "ov-mcp-server"
-vars = { ENVIRONMENT = "production" }
-
-[env.production.kv_namespaces]
-GTFS_CACHE = { id = "${GTFS_CACHE_KV_ID}" }
-
-# Staging environment
-[env.staging]
-name = "ov-mcp-server-staging"
-vars = { ENVIRONMENT = "staging" }
-
-[env.staging.kv_namespaces]
-GTFS_CACHE = { id = "${GTFS_CACHE_PREVIEW_KV_ID}" }
+# Scheduled triggers for automatic GTFS updates
+[triggers]
+crons = ["0 3 * * 0"]  # Every Sunday at 3am UTC
 
 # Observability
 [observability]
 enabled = true
-
-# No compatibility flags needed - pure browser APIs
