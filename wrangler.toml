@@ -18,11 +18,6 @@ REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
 [triggers]
 crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 
-# Durable Objects binding (required for migration to work)
-[[durable_objects.bindings]]
-name = "OV_MCP"
-class_name = "OVMcpAgent"
-
 # Observability
 [observability]
 enabled = true
