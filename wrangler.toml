@@ -1,4 +1,4 @@
-name = "ov-mcp-server"
+name = "ov-mcp"
 main = "packages/cloudflare-worker/src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
