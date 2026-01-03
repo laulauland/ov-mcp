@@ -17,38 +17,17 @@ tag = "v1"
 new_classes = ["OVMcpAgent"]
 
 # KV Namespaces for caching GTFS data
-# NOTE: You must create KV namespaces first via:
-#   wrangler kv:namespace create GTFS_CACHE
-#   wrangler kv:namespace create GTFS_CACHE --preview
-# Then replace the IDs below with the actual namespace IDs
+# Create with: npx wrangler kv:namespace create GTFS_CACHE
+# Then uncomment and add the ID below:
 # [[kv_namespaces]]
 # binding = "GTFS_CACHE"
 # id = "<YOUR_KV_NAMESPACE_ID>"
-# preview_id = "<YOUR_PREVIEW_KV_NAMESPACE_ID>"
 
 # Environment variables
 [vars]
-ENVIRONMENT = "development"
+ENVIRONMENT = "production"
 GTFS_FEED_URL = "http://gtfs.ovapi.nl/gtfs-nl.zip"
 REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
-
-# Production environment
-[env.production]
-name = "ov-mcp-server"
-vars = { ENVIRONMENT = "production" }
-# Uncomment and add your production KV namespace ID:
-# kv_namespaces = [
-#   { binding = "GTFS_CACHE", id = "<YOUR_PRODUCTION_KV_ID>" }
-# ]
-
-# Staging environment
-[env.staging]
-name = "ov-mcp-server-staging"
-vars = { ENVIRONMENT = "staging" }
-# Uncomment and add your staging KV namespace ID:
-# kv_namespaces = [
-#   { binding = "GTFS_CACHE", id = "<YOUR_STAGING_KV_ID>" }
-# ]
 
 # Observability
 [observability]
