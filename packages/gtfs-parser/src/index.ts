@@ -4,6 +4,6 @@
  */
 
 export { GTFSParser } from './parser';
-export { GTFSQuery } from './query';
+export { GTFSQuery, haversineDistance, isServiceActive } from './query';
 export { GTFSDownloader } from './downloader';
 export * from './types';

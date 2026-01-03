@@ -7,6 +7,69 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { GTFSDownloader, GTFSQuery, GTFSFeed } from "@ov-mcp/gtfs-parser";
+import * as fs from "fs/promises";
+import * as path from "path";
+
+/**
+ * Local file system cache for GTFS data (for mcp-server only)
+ */
+class GTFSCache {
+  private static readonly CACHE_DIR = './data/gtfs-cache';
+  private static readonly CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+  static async save(feed: GTFSFeed): Promise<void> {
+    try {
+      await fs.mkdir(this.CACHE_DIR, { recursive: true });
+
+      const cacheFile = path.join(this.CACHE_DIR, 'gtfs-feed.json');
+      const metaFile = path.join(this.CACHE_DIR, 'metadata.json');
+
+      await fs.writeFile(cacheFile, JSON.stringify(feed));
+      await fs.writeFile(metaFile, JSON.stringify({
+        lastUpdated: new Date().toISOString(),
+        stopCount: feed.stops.length,
+        routeCount: feed.routes.length,
+        tripCount: feed.trips.length,
+      }));
+
+      console.error(`Cached GTFS data to ${cacheFile}`);
+    } catch (error) {
+      console.error('Error saving to cache:', error);
+    }
+  }
+
+  static async load(): Promise<GTFSFeed | null> {
+    try {
+      const cacheFile = path.join(this.CACHE_DIR, 'gtfs-feed.json');
+      const metaFile = path.join(this.CACHE_DIR, 'metadata.json');
+
+      // Check if cache exists
+      try {
+        await fs.access(cacheFile);
+      } catch {
+        return null;
+      }
+
+      // Check cache age
+      const metadata = JSON.parse(await fs.readFile(metaFile, 'utf-8'));
+      const lastUpdated = new Date(metadata.lastUpdated);
+      const now = new Date();
+
+      if (now.getTime() - lastUpdated.getTime() > this.CACHE_DURATION_MS) {
+        console.error('Cache expired');
+        return null;
+      }
+
+      // Load and return cached data
+      const data = await fs.readFile(cacheFile, 'utf-8');
+      console.error('Loaded GTFS data from cache');
+      return JSON.parse(data);
+    } catch (error) {
+      console.error('Error loading from cache:', error);
+      return null;
+    }
+  }
+}
 
 /**
  * OV-MCP Server
@@ -39,12 +102,22 @@ class OVMCPServer {
    */
   private async initializeGTFSData(): Promise<void> {
     if (this.isLoading || this.gtfsFeed) return;
-    
+
     this.isLoading = true;
     console.error('Initializing GTFS data...');
 
     try {
-      this.gtfsFeed = await GTFSDownloader.getFeed();
+      // Try to load from cache first
+      const cached = await GTFSCache.load();
+      if (cached) {
+        this.gtfsFeed = cached;
+      } else {
+        // Download fresh data
+        console.error('Cache miss - downloading fresh GTFS data...');
+        this.gtfsFeed = await GTFSDownloader.fetchAndParse();
+        await GTFSCache.save(this.gtfsFeed);
+      }
+
       console.error('GTFS data loaded successfully');
       console.error(`- ${this.gtfsFeed.stops.length} stops`);
       console.error(`- ${this.gtfsFeed.routes.length} routes`);

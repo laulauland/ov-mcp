@@ -82,6 +82,12 @@ export interface GTFSCalendar {
   end_date: string;
 }
 
+export interface GTFSCalendarDate {
+  service_id: string;
+  date: string;
+  exception_type: '1' | '2'; // 1 = added, 2 = removed
+}
+
 export interface GTFSFeed {
   agencies: GTFSAgency[];
   stops: GTFSStop[];
@@ -89,4 +95,5 @@ export interface GTFSFeed {
   trips: GTFSTrip[];
   stop_times: GTFSStopTime[];
   calendar: GTFSCalendar[];
+  calendar_dates?: GTFSCalendarDate[];
 }

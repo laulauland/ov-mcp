@@ -6,7 +6,11 @@
     "packages/*"
   ],
   "scripts": {
+    "build": "bun run build:gtfs && bun run build:worker",
+    "build:gtfs": "cd packages/gtfs-parser && bun run build",
+    "build:worker": "cd packages/cloudflare-worker && bun run build",
     "dev": "cd packages/cloudflare-worker && bun run dev",
+    "deploy": "cd packages/cloudflare-worker && bun run deploy",
     "deploy:staging": "bash deploy.sh staging",
     "deploy:production": "bash deploy.sh production",
     "test": "bun run test:gtfs",

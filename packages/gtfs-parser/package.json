@@ -12,11 +12,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "csv-parse": "^5.5.3",
+    "papaparse": "^5.4.1",
     "fflate": "^0.8.2"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/papaparse": "^5.3.14",
     "typescript": "^5.3.3"
   }
 }

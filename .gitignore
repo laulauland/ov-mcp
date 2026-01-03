@@ -10,6 +10,11 @@ build/
 .bun/
 bun.lockb
 
+# pnpm (not used - we use bun)
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.pnpm-store/
+
 # Environment variables
 .env
 .env.local

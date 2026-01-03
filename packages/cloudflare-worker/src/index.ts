@@ -7,8 +7,7 @@ import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import type { GTFSFeed, GTFSStop, GTFSRoute } from './gtfs-static';
-import { searchStopsByName, getStopById, findStopsNear } from './gtfs-static';
+import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery } from '@ov-mcp/gtfs-parser';
 
 // Cache configuration
 const CACHE_TTL = 60 * 60 * 24; // 24 hours in seconds
@@ -122,7 +121,7 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
           };
         }
 
-        const stops = searchStopsByName(feed.stops, query, limit);
+        const stops = GTFSQuery.searchStopsByName(feed.stops, query, limit);
 
         if (stops.length === 0) {
           return {
@@ -156,7 +155,7 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
           };
         }
 
-        const stop = getStopById(feed.stops, stop_id);
+        const stop = GTFSQuery.getStopById(feed.stops, stop_id);
 
         if (!stop) {
           return {
@@ -189,7 +188,7 @@ export class OVMcpAgent extends McpAgent<Env, AgentState, {}> {
           };
         }
 
-        const stops = findStopsNear(feed.stops, latitude, longitude, radius_km, limit);
+        const stops = GTFSQuery.findStopsNear(feed.stops, latitude, longitude, radius_km, limit);
 
         if (stops.length === 0) {
           return {
