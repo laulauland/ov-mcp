@@ -6,17 +6,18 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build:worker",
-    "build:worker": "cd packages/cloudflare-worker && npm run build",
-    "dev": "npm run dev:worker",
-    "dev:worker": "cd packages/cloudflare-worker && npm run dev",
+    "dev": "cd packages/cloudflare-worker && bun run dev",
     "deploy:staging": "bash deploy.sh staging",
     "deploy:production": "bash deploy.sh production",
-    "test": "echo \"No tests configured yet\"",
-    "typecheck": "cd packages/cloudflare-worker && npm run typecheck",
+    "test": "bun run test:gtfs",
+    "test:gtfs": "cd packages/gtfs-parser && bun test",
+    "typecheck": "bun run typecheck:worker && bun run typecheck:gtfs",
+    "typecheck:worker": "cd packages/cloudflare-worker && bun run typecheck",
+    "typecheck:gtfs": "cd packages/gtfs-parser && bun run typecheck",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "typescript": "^5.3.3"
   },
   "engines": {

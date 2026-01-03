@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "csv-parse": "^5.5.3"
+    "csv-parse": "^5.5.3",
+    "fflate": "^0.8.2"
   },
   "devDependencies": {
     "@types/bun": "latest",
