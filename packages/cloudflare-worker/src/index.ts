@@ -88,7 +88,7 @@ function formatRoute(route: GTFSRoute) {
 }
 
 /**
- * Get GTFS data from KV cache
+ * Get GTFS data from KV cache, with lazy loading on first request
  */
 async function getGTFSData(): Promise<GTFSFeed | null> {
   if (!globalEnv?.GTFS_CACHE) {
@@ -97,10 +97,41 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
   }
 
   try {
+    // Check if data exists in KV
     const cached = await globalEnv.GTFS_CACHE.get(GTFS_DATA_KEY, 'json');
-    return cached as GTFSFeed | null;
+    if (cached) {
+      return cached as GTFSFeed;
+    }
+
+    // Lazy load: download and parse GTFS data on first request
+    console.log('GTFS data not in cache, fetching from source...');
+    const feedUrl = globalEnv.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
+
+    const feed = await GTFSDownloader.fetchAndParse(feedUrl);
+    console.log(`Fetched: ${feed.stops.length} stops, ${feed.routes.length} routes`);
+
+    // Store in KV for future requests
+    await globalEnv.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
+      expirationTtl: CACHE_TTL * 7, // 7 days
+    });
+
+    // Update metadata
+    const metadata = {
+      lastUpdated: new Date().toISOString(),
+      stopCount: feed.stops.length,
+      routeCount: feed.routes.length,
+      tripCount: feed.trips.length,
+      agencyCount: feed.agencies.length,
+      triggeredBy: 'lazy-load',
+    };
+    await globalEnv.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
+      expirationTtl: CACHE_TTL * 7,
+    });
+
+    console.log('GTFS data cached successfully');
+    return feed;
   } catch (error) {
-    console.error('Error fetching GTFS data from KV:', error);
+    console.error('Error fetching GTFS data:', error);
     return null;
   }
 }
