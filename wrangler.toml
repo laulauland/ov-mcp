@@ -18,11 +18,21 @@ REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
 [triggers]
 crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 
+# Durable Objects binding (required for migration to work)
+[[durable_objects.bindings]]
+name = "OV_MCP"
+class_name = "OVMcpAgent"
+
 # Observability
 [observability]
 enabled = true
 
-# Migrations to delete the old Durable Object class
+# Migration v1: Original creation of OVMcpAgent (already applied)
 [[migrations]]
 tag = "v1"
+new_classes = ["OVMcpAgent"]
+
+# Migration v2: Delete OVMcpAgent since we now use createMcpHandler
+[[migrations]]
+tag = "v2"
 deleted_classes = ["OVMcpAgent"]
