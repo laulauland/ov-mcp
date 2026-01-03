@@ -1,4 +1,4 @@
-import { unzipSync } from 'bun';
+import { unzipSync } from 'fflate';
 import { GTFSParser } from './parser';
 import { GTFSFeed } from './types';
 
