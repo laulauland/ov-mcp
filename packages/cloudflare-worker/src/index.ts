@@ -1,6 +1,10 @@
 /**
  * OV-MCP Server - Cloudflare Worker
- * Dutch Public Transport MCP Server using createMcpHandler
+ * Dutch Public Transport MCP Server using Cloudflare Agents SDK
+ *
+ * Uses createMcpHandler from agents/mcp for Streamable HTTP transport
+ * Note: Local dev (wrangler dev) fails due to cloudflare:email import in agents SDK
+ * Deploy with `wrangler deploy` to test
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -260,7 +264,8 @@ function createServer(): McpServer {
 // Create the MCP server instance
 const mcpServer = createServer();
 
-// Create the MCP handler using createMcpHandler from agents SDK
+// Create the MCP handler using createMcpHandler from Cloudflare Agents SDK
+// This provides Streamable HTTP transport for remote MCP clients
 const mcpHandler = createMcpHandler(mcpServer, {
   route: "/mcp",
   corsOptions: {
@@ -382,7 +387,7 @@ async function handleAdminRequest(request: Request, env: Env, url: URL): Promise
 }
 
 /**
- * Main Worker export
+ * Main Worker export using Cloudflare Agents SDK pattern
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -411,7 +416,7 @@ export default {
       return adminResponse;
     }
 
-    // Route MCP requests through the createMcpHandler
+    // Route MCP requests through createMcpHandler
     if (url.pathname === '/mcp') {
       try {
         return await mcpHandler(request, env, ctx);
