@@ -7,7 +7,7 @@ import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery } from '@ov-mcp/gtfs-parser';
+import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, GTFSDownloader } from '@ov-mcp/gtfs-parser';
 
 // Cache configuration
 const CACHE_TTL = 60 * 60 * 24; // 24 hours in seconds
@@ -20,6 +20,7 @@ export interface Env {
   OV_MCP: DurableObjectNamespace<OVMcpAgent>;
   ENVIRONMENT?: string;
   GTFS_UPDATE_SECRET?: string;
+  GTFS_FEED_URL?: string;
 }
 
 // State for the MCP agent (can be extended for stateful operations)
@@ -409,5 +410,50 @@ export default {
     }
 
     return new Response('Not Found', { status: 404 });
+  },
+
+  /**
+   * Scheduled handler for automatic GTFS data updates
+   * Triggered by cron: every Sunday at 3am UTC
+   */
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log('Scheduled GTFS update triggered at:', new Date(event.scheduledTime).toISOString());
+
+    if (!env.GTFS_CACHE) {
+      console.error('GTFS_CACHE KV namespace not configured - skipping scheduled update');
+      return;
+    }
+
+    try {
+      // Download and parse fresh GTFS data
+      const feedUrl = env.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
+      console.log('Downloading GTFS data from:', feedUrl);
+
+      const feed = await GTFSDownloader.fetchAndParse(feedUrl);
+      console.log(`Downloaded: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips`);
+
+      // Store in KV
+      await env.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
+        expirationTtl: CACHE_TTL * 7, // 7 days for scheduled updates
+      });
+
+      // Update metadata
+      const metadata = {
+        lastUpdated: new Date().toISOString(),
+        stopCount: feed.stops.length,
+        routeCount: feed.routes.length,
+        tripCount: feed.trips.length,
+        agencyCount: feed.agencies.length,
+        triggeredBy: 'scheduled',
+      };
+      await env.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
+        expirationTtl: CACHE_TTL * 7,
+      });
+
+      console.log('GTFS data updated successfully:', metadata);
+    } catch (error) {
+      console.error('Failed to update GTFS data:', error);
+      throw error; // Re-throw to mark the scheduled event as failed
+    }
   },
 };
