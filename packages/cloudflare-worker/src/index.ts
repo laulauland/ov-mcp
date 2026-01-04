@@ -9,12 +9,14 @@
  * ARCHITECTURE:
  * - Worker: Handles API requests using Cloudflare Containers pattern
  * - Container: Manages GTFS processing, KV caching, and dependencies
+ * - Durable Object: Manages GTFS state with SQL storage
  * - Uses streaming and memory-efficient processing for large GTFS files
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
+import { DurableObject } from "cloudflare:workers";
 
 import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, GTFSDownloader } from '@ov-mcp/gtfs-parser';
 
@@ -33,8 +35,116 @@ const RETRY_DELAY_MS = 2000;
 // Environment interface for Cloudflare Worker
 export interface Env {
   GTFS_CACHE?: KVNamespace;
+  GTFS_STATE?: DurableObjectNamespace;
   ENVIRONMENT?: string;
   GTFS_FEED_URL?: string;
+}
+
+/**
+ * GTFSState Durable Object
+ * Manages GTFS processing state with SQL storage for persistence
+ */
+export class GTFSState extends DurableObject {
+  /**
+   * Initialize the Durable Object and set up SQL tables
+   */
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    
+    // Initialize SQL tables for GTFS state
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gtfs_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+  }
+
+  /**
+   * Store GTFS metadata
+   */
+  async setMetadata(key: string, value: any): Promise<void> {
+    const now = Date.now();
+    const valueStr = JSON.stringify(value);
+    
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO gtfs_metadata (key, value, updated_at) VALUES (?, ?, ?)`,
+      key,
+      valueStr,
+      now
+    );
+  }
+
+  /**
+   * Get GTFS metadata
+   */
+  async getMetadata(key: string): Promise<any | null> {
+    const result = this.ctx.storage.sql.exec(
+      `SELECT value FROM gtfs_metadata WHERE key = ?`,
+      key
+    ).toArray();
+
+    if (result.length === 0) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(result[0].value as string);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get all metadata
+   */
+  async getAllMetadata(): Promise<Record<string, any>> {
+    const results = this.ctx.storage.sql.exec(
+      `SELECT key, value FROM gtfs_metadata`
+    ).toArray();
+
+    const metadata: Record<string, any> = {};
+    for (const row of results) {
+      try {
+        metadata[row.key as string] = JSON.parse(row.value as string);
+      } catch {
+        metadata[row.key as string] = row.value;
+      }
+    }
+
+    return metadata;
+  }
+
+  /**
+   * Handle fetch requests to this Durable Object
+   */
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    
+    if (url.pathname === '/metadata' && request.method === 'GET') {
+      const metadata = await this.getAllMetadata();
+      return new Response(JSON.stringify(metadata), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (url.pathname === '/metadata' && request.method === 'POST') {
+      const body = await request.json() as { key: string; value: any };
+      await this.setMetadata(body.key, body.value);
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (url.pathname === '/health') {
+      return new Response(JSON.stringify({ status: 'ok', type: 'GTFSState' }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    return new Response('Not Found', { status: 404 });
+  }
 }
 
 /**
