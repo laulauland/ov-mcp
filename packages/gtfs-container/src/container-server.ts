@@ -9,16 +9,19 @@
  * - KV storage for caching with TTL
  * - Durable Object Storage for persistent state
  * - Memory-efficient parsing with iterators
+ * - API endpoints for Worker integration: /api/gtfs/data, /api/gtfs/update, /api/gtfs/metadata
  */
 
 import { DurableObject } from 'cloudflare:workers';
 import type { GTFSFeed, GTFSStop, GTFSRoute, GTFSTrip, GTFSStopTime, GTFSAgency, GTFSCalendar } from '../../gtfs-parser/src/types';
 
-// Constants for memory management
+// Constants for memory management - optimized for 8GB container
 const CHUNK_SIZE = 1024 * 1024; // 1MB chunks for streaming
-const MAX_MEMORY_THRESHOLD = 128 * 1024 * 1024; // 128MB memory limit
-const BATCH_SIZE = 1000; // Process records in batches
+const MAX_MEMORY_THRESHOLD = 7 * 1024 * 1024 * 1024; // 7GB memory limit (leave 1GB for overhead)
+const BATCH_SIZE = 5000; // Larger batches for 8GB container
 const CACHE_TTL = 86400; // 24 hours
+const METADATA_KEY = 'gtfs:metadata';
+const DATA_KEY_PREFIX = 'gtfs:data:';
 
 interface Env {
   GTFS_STATE: DurableObjectNamespace;
@@ -65,27 +68,182 @@ interface GTFSProcessResponse {
   streamId?: string;
 }
 
+interface GTFSMetadata {
+  lastUpdated: string;
+  version: string;
+  feedUrl?: string;
+  stats: {
+    stops: number;
+    routes: number;
+    trips: number;
+    stopTimes: number;
+    agencies: number;
+    calendar: number;
+  };
+  processingTime: number;
+  dataSize: number;
+  status: 'processing' | 'ready' | 'error' | 'empty';
+}
+
 /**
  * Cloudflare Durable Object for GTFS State Management
- * Handles stateful processing and storage of GTFS data
+ * Handles stateful processing and storage of GTFS data in 8GB container memory
  */
 export class GTFSState extends DurableObject {
   private processingState: Map<string, any>;
   private memoryUsage: number;
+  private gtfsData: {
+    stops: Map<string, GTFSStop>;
+    routes: Map<string, GTFSRoute>;
+    trips: Map<string, GTFSTrip>;
+    stopTimes: GTFSStopTime[];
+    agencies: GTFSAgency[];
+    calendar: Map<string, GTFSCalendar>;
+  };
+  private metadata: GTFSMetadata;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.processingState = new Map();
     this.memoryUsage = 0;
+    this.gtfsData = {
+      stops: new Map(),
+      routes: new Map(),
+      trips: new Map(),
+      stopTimes: [],
+      agencies: [],
+      calendar: new Map()
+    };
+    this.metadata = {
+      lastUpdated: new Date().toISOString(),
+      version: '1.0.0',
+      stats: {
+        stops: 0,
+        routes: 0,
+        trips: 0,
+        stopTimes: 0,
+        agencies: 0,
+        calendar: 0
+      },
+      processingTime: 0,
+      dataSize: 0,
+      status: 'empty'
+    };
   }
 
   /**
    * Initialize storage and load persisted state
    */
   async initialize() {
+    // Load metadata from storage
+    const storedMetadata = await this.ctx.storage.get<GTFSMetadata>(METADATA_KEY);
+    if (storedMetadata) {
+      this.metadata = storedMetadata;
+    }
+
+    // Load processing state
     const stored = await this.ctx.storage.get<Map<string, any>>('processingState');
     if (stored) {
       this.processingState = new Map(stored);
+    }
+
+    // Load GTFS data from storage into memory
+    await this.loadGTFSDataFromStorage();
+  }
+
+  /**
+   * Load GTFS data from Durable Object storage into memory
+   * Optimized for 8GB container memory space
+   */
+  private async loadGTFSDataFromStorage() {
+    console.log('📥 Loading GTFS data from storage into memory...');
+    
+    try {
+      // Load stops
+      const stopsData = await this.ctx.storage.get<GTFSStop[]>(`${DATA_KEY_PREFIX}stops`);
+      if (stopsData) {
+        this.gtfsData.stops = new Map(stopsData.map(s => [s.stop_id, s]));
+      }
+
+      // Load routes
+      const routesData = await this.ctx.storage.get<GTFSRoute[]>(`${DATA_KEY_PREFIX}routes`);
+      if (routesData) {
+        this.gtfsData.routes = new Map(routesData.map(r => [r.route_id, r]));
+      }
+
+      // Load trips
+      const tripsData = await this.ctx.storage.get<GTFSTrip[]>(`${DATA_KEY_PREFIX}trips`);
+      if (tripsData) {
+        this.gtfsData.trips = new Map(tripsData.map(t => [t.trip_id, t]));
+      }
+
+      // Load stop times (kept as array for sequential access)
+      const stopTimesData = await this.ctx.storage.get<GTFSStopTime[]>(`${DATA_KEY_PREFIX}stop_times`);
+      if (stopTimesData) {
+        this.gtfsData.stopTimes = stopTimesData;
+      }
+
+      // Load agencies
+      const agenciesData = await this.ctx.storage.get<GTFSAgency[]>(`${DATA_KEY_PREFIX}agencies`);
+      if (agenciesData) {
+        this.gtfsData.agencies = agenciesData;
+      }
+
+      // Load calendar
+      const calendarData = await this.ctx.storage.get<GTFSCalendar[]>(`${DATA_KEY_PREFIX}calendar`);
+      if (calendarData) {
+        this.gtfsData.calendar = new Map(calendarData.map(c => [c.service_id, c]));
+      }
+
+      console.log('✅ GTFS data loaded into memory');
+      console.log(`   Stops: ${this.gtfsData.stops.size}`);
+      console.log(`   Routes: ${this.gtfsData.routes.size}`);
+      console.log(`   Trips: ${this.gtfsData.trips.size}`);
+      console.log(`   Stop Times: ${this.gtfsData.stopTimes.length}`);
+      console.log(`   Agencies: ${this.gtfsData.agencies.length}`);
+      console.log(`   Calendar: ${this.gtfsData.calendar.size}`);
+      
+      if (this.gtfsData.stops.size > 0) {
+        this.metadata.status = 'ready';
+      }
+    } catch (error) {
+      console.error('❌ Failed to load GTFS data from storage:', error);
+      this.metadata.status = 'error';
+    }
+  }
+
+  /**
+   * Save GTFS data from memory to Durable Object storage
+   */
+  private async saveGTFSDataToStorage() {
+    console.log('💾 Saving GTFS data from memory to storage...');
+    
+    try {
+      // Save stops
+      await this.ctx.storage.put(`${DATA_KEY_PREFIX}stops`, Array.from(this.gtfsData.stops.values()));
+      
+      // Save routes
+      await this.ctx.storage.put(`${DATA_KEY_PREFIX}routes`, Array.from(this.gtfsData.routes.values()));
+      
+      // Save trips
+      await this.ctx.storage.put(`${DATA_KEY_PREFIX}trips`, Array.from(this.gtfsData.trips.values()));
+      
+      // Save stop times
+      await this.ctx.storage.put(`${DATA_KEY_PREFIX}stop_times`, this.gtfsData.stopTimes);
+      
+      // Save agencies
+      await this.ctx.storage.put(`${DATA_KEY_PREFIX}agencies`, this.gtfsData.agencies);
+      
+      // Save calendar
+      await this.ctx.storage.put(`${DATA_KEY_PREFIX}calendar`, Array.from(this.gtfsData.calendar.values()));
+      
+      // Save metadata
+      await this.ctx.storage.put(METADATA_KEY, this.metadata);
+      
+      console.log('✅ GTFS data saved to storage');
+    } catch (error) {
+      console.error('❌ Failed to save GTFS data to storage:', error);
+      throw error;
     }
   }
 
@@ -226,12 +384,26 @@ export class GTFSState extends DurableObject {
 
   /**
    * Process GTFS file with streaming and chunking
+   * Stores all data in 8GB container memory
    */
   async processGTFSStreaming(request: GTFSProcessRequest): Promise<GTFSProcessResponse> {
     const startTime = Date.now();
     const streamId = crypto.randomUUID();
     
+    this.metadata.status = 'processing';
+    await this.ctx.storage.put(METADATA_KEY, this.metadata);
+    
     try {
+      // Clear existing data
+      this.gtfsData = {
+        stops: new Map(),
+        routes: new Map(),
+        trips: new Map(),
+        stopTimes: [],
+        agencies: [],
+        calendar: new Map()
+      };
+
       // Download GTFS with progress tracking
       const zipBuffer = await this.downloadGTFSWithProgress(request.url!);
       
@@ -250,7 +422,7 @@ export class GTFSState extends DurableObject {
       this.processingState.set(streamId, state);
       await this.ctx.storage.put(`stream:${streamId}`, state);
       
-      // Stream process each file
+      // Stream process each file into memory
       for await (const { filename, content } of this.streamExtractGTFS(zipBuffer)) {
         console.log(`🔄 Processing ${filename} (${(content.length / 1024).toFixed(2)}KB)`);
         
@@ -259,20 +431,44 @@ export class GTFSState extends DurableObject {
           continue;
         }
         
-        // Process based on file type
-        await this.processFileStreaming(filename, content, streamId, request.options?.batchSize);
+        // Process based on file type - load into memory
+        await this.processFileIntoMemory(filename, content, streamId, request.options?.batchSize);
         
         state.filesProcessed++;
         await this.ctx.storage.put(`stream:${streamId}`, state);
         
-        // Force garbage collection opportunity
-        if (this.memoryUsage > MAX_MEMORY_THRESHOLD) {
-          console.warn(`⚠️  Memory threshold reached: ${(this.memoryUsage / 1024 / 1024).toFixed(2)}MB`);
-          await this.flushToStorage(streamId);
+        // Monitor memory usage
+        const memUsage = this.estimateMemoryUsage();
+        console.log(`   Memory usage: ${(memUsage / 1024 / 1024).toFixed(2)}MB`);
+        
+        if (memUsage > MAX_MEMORY_THRESHOLD) {
+          console.warn(`⚠️  Memory threshold reached: ${(memUsage / 1024 / 1024 / 1024).toFixed(2)}GB`);
         }
       }
       
+      // Save processed data to storage
+      await this.saveGTFSDataToStorage();
+      
       const processingTime = Date.now() - startTime;
+      
+      // Update metadata
+      this.metadata = {
+        lastUpdated: new Date().toISOString(),
+        version: '1.0.0',
+        feedUrl: request.url,
+        stats: {
+          stops: this.gtfsData.stops.size,
+          routes: this.gtfsData.routes.size,
+          trips: this.gtfsData.trips.size,
+          stopTimes: this.gtfsData.stopTimes.length,
+          agencies: this.gtfsData.agencies.length,
+          calendar: this.gtfsData.calendar.size
+        },
+        processingTime,
+        dataSize: this.estimateMemoryUsage(),
+        status: 'ready'
+      };
+      await this.ctx.storage.put(METADATA_KEY, this.metadata);
       
       return {
         success: true,
@@ -288,6 +484,9 @@ export class GTFSState extends DurableObject {
       
     } catch (error) {
       console.error('❌ Streaming processing failed:', error);
+      this.metadata.status = 'error';
+      await this.ctx.storage.put(METADATA_KEY, this.metadata);
+      
       return {
         success: false,
         operation: request.operation,
@@ -295,6 +494,33 @@ export class GTFSState extends DurableObject {
         timestamp: new Date().toISOString()
       };
     }
+  }
+
+  /**
+   * Estimate current memory usage
+   */
+  private estimateMemoryUsage(): number {
+    let size = 0;
+    
+    // Estimate stops
+    size += this.gtfsData.stops.size * 200; // ~200 bytes per stop
+    
+    // Estimate routes
+    size += this.gtfsData.routes.size * 150; // ~150 bytes per route
+    
+    // Estimate trips
+    size += this.gtfsData.trips.size * 100; // ~100 bytes per trip
+    
+    // Estimate stop times
+    size += this.gtfsData.stopTimes.length * 80; // ~80 bytes per stop time
+    
+    // Estimate agencies
+    size += this.gtfsData.agencies.length * 200; // ~200 bytes per agency
+    
+    // Estimate calendar
+    size += this.gtfsData.calendar.size * 100; // ~100 bytes per calendar entry
+    
+    return size;
   }
 
   /**
@@ -312,7 +538,7 @@ export class GTFSState extends DurableObject {
     console.log(`   Size: ${(contentLength / 1024 / 1024).toFixed(2)}MB`);
     
     // Use streaming for large files
-    if (contentLength > MAX_MEMORY_THRESHOLD) {
+    if (contentLength > 100 * 1024 * 1024) {
       return await this.downloadChunked(response);
     }
     
@@ -353,20 +579,20 @@ export class GTFSState extends DurableObject {
   }
 
   /**
-   * Process individual GTFS file with streaming
+   * Process individual GTFS file into container memory
    */
-  private async processFileStreaming(filename: string, content: string, streamId: string, batchSize?: number): Promise<void> {
+  private async processFileIntoMemory(filename: string, content: string, streamId: string, batchSize?: number): Promise<void> {
     const state = this.processingState.get(streamId);
     if (!state) return;
     
     const size = batchSize || BATCH_SIZE;
     
-    // Process based on filename
+    // Process based on filename - load all data into memory
     switch (filename) {
       case 'stops.txt':
         for await (const batch of this.parseCSVStream(content, size)) {
           const stops = this.parseStopsBatch(batch);
-          await this.storeStopsBatch(streamId, stops);
+          stops.forEach(stop => this.gtfsData.stops.set(stop.stop_id, stop));
           state.stops += stops.length;
         }
         break;
@@ -374,7 +600,7 @@ export class GTFSState extends DurableObject {
       case 'routes.txt':
         for await (const batch of this.parseCSVStream(content, size)) {
           const routes = this.parseRoutesBatch(batch);
-          await this.storeRoutesBatch(streamId, routes);
+          routes.forEach(route => this.gtfsData.routes.set(route.route_id, route));
           state.routes += routes.length;
         }
         break;
@@ -382,7 +608,7 @@ export class GTFSState extends DurableObject {
       case 'trips.txt':
         for await (const batch of this.parseCSVStream(content, size)) {
           const trips = this.parseTripsBatch(batch);
-          await this.storeTripsBatch(streamId, trips);
+          trips.forEach(trip => this.gtfsData.trips.set(trip.trip_id, trip));
           state.trips += trips.length;
         }
         break;
@@ -390,7 +616,7 @@ export class GTFSState extends DurableObject {
       case 'stop_times.txt':
         for await (const batch of this.parseCSVStream(content, size)) {
           const stopTimes = this.parseStopTimesBatch(batch);
-          await this.storeStopTimesBatch(streamId, stopTimes);
+          this.gtfsData.stopTimes.push(...stopTimes);
           state.stopTimes += stopTimes.length;
         }
         break;
@@ -398,7 +624,7 @@ export class GTFSState extends DurableObject {
       case 'agency.txt':
         for await (const batch of this.parseCSVStream(content, size)) {
           const agencies = this.parseAgenciesBatch(batch);
-          await this.storeAgenciesBatch(streamId, agencies);
+          this.gtfsData.agencies.push(...agencies);
           state.agencies += agencies.length;
         }
         break;
@@ -406,7 +632,7 @@ export class GTFSState extends DurableObject {
       case 'calendar.txt':
         for await (const batch of this.parseCSVStream(content, size)) {
           const calendar = this.parseCalendarBatch(batch);
-          await this.storeCalendarBatch(streamId, calendar);
+          calendar.forEach(cal => this.gtfsData.calendar.set(cal.service_id, cal));
           state.calendar += calendar.length;
         }
         break;
@@ -520,140 +746,85 @@ export class GTFSState extends DurableObject {
   }
 
   /**
-   * Store batches in Durable Object Storage
+   * Get complete GTFS data from memory
    */
-  private async storeStopsBatch(streamId: string, stops: GTFSStop[]): Promise<void> {
-    const key = `${streamId}:stops:${Date.now()}`;
-    await this.ctx.storage.put(key, stops);
-    this.memoryUsage += JSON.stringify(stops).length;
-  }
-
-  private async storeRoutesBatch(streamId: string, routes: GTFSRoute[]): Promise<void> {
-    const key = `${streamId}:routes:${Date.now()}`;
-    await this.ctx.storage.put(key, routes);
-    this.memoryUsage += JSON.stringify(routes).length;
-  }
-
-  private async storeTripsBatch(streamId: string, trips: GTFSTrip[]): Promise<void> {
-    const key = `${streamId}:trips:${Date.now()}`;
-    await this.ctx.storage.put(key, trips);
-    this.memoryUsage += JSON.stringify(trips).length;
-  }
-
-  private async storeStopTimesBatch(streamId: string, stopTimes: GTFSStopTime[]): Promise<void> {
-    const key = `${streamId}:stop_times:${Date.now()}`;
-    await this.ctx.storage.put(key, stopTimes);
-    this.memoryUsage += JSON.stringify(stopTimes).length;
-  }
-
-  private async storeAgenciesBatch(streamId: string, agencies: GTFSAgency[]): Promise<void> {
-    const key = `${streamId}:agencies:${Date.now()}`;
-    await this.ctx.storage.put(key, agencies);
-    this.memoryUsage += JSON.stringify(agencies).length;
-  }
-
-  private async storeCalendarBatch(streamId: string, calendar: GTFSCalendar[]): Promise<void> {
-    const key = `${streamId}:calendar:${Date.now()}`;
-    await this.ctx.storage.put(key, calendar);
-    this.memoryUsage += JSON.stringify(calendar).length;
+  getGTFSData(): any {
+    return {
+      stops: Array.from(this.gtfsData.stops.values()),
+      routes: Array.from(this.gtfsData.routes.values()),
+      trips: Array.from(this.gtfsData.trips.values()),
+      stopTimes: this.gtfsData.stopTimes,
+      agencies: this.gtfsData.agencies,
+      calendar: Array.from(this.gtfsData.calendar.values())
+    };
   }
 
   /**
-   * Flush data to KV storage and clear memory
-   */
-  private async flushToStorage(streamId: string): Promise<void> {
-    console.log('💾 Flushing to persistent storage...');
-    
-    // This would aggregate batches and store in KV
-    // Implementation depends on specific requirements
-    
-    this.memoryUsage = 0;
-  }
-
-  /**
-   * Query GTFS data from storage
+   * Query GTFS data from memory
    */
   async queryGTFS(streamId: string, query: NonNullable<GTFSProcessRequest['query']>): Promise<any> {
     switch (query.type) {
       case 'stops':
-        return await this.queryStops(streamId, query.params);
+        return await this.queryStops(query.params);
       case 'routes':
-        return await this.queryRoutes(streamId, query.params);
+        return await this.queryRoutes(query.params);
       case 'trips':
-        return await this.queryTrips(streamId, query.params);
+        return await this.queryTrips(query.params);
       case 'nearby':
-        return await this.queryNearbyStops(streamId, query.params);
+        return await this.queryNearbyStops(query.params);
       default:
         throw new Error(`Unknown query type: ${query.type}`);
     }
   }
 
-  private async queryStops(streamId: string, params?: Record<string, any>): Promise<GTFSStop[]> {
-    const keys = await this.ctx.storage.list({ prefix: `${streamId}:stops:` });
-    const stops: GTFSStop[] = [];
-    
-    for (const [key, value] of keys) {
-      stops.push(...(value as GTFSStop[]));
-    }
+  private async queryStops(params?: Record<string, any>): Promise<GTFSStop[]> {
+    let stops = Array.from(this.gtfsData.stops.values());
     
     // Apply filters
-    let filtered = stops;
     if (params?.search) {
       const search = params.search.toLowerCase();
-      filtered = stops.filter(s => 
+      stops = stops.filter(s => 
         s.stop_name.toLowerCase().includes(search) ||
         s.stop_id.toLowerCase().includes(search)
       );
     }
     
-    return filtered.slice(0, params?.limit || 100);
+    return stops.slice(0, params?.limit || 100);
   }
 
-  private async queryRoutes(streamId: string, params?: Record<string, any>): Promise<GTFSRoute[]> {
-    const keys = await this.ctx.storage.list({ prefix: `${streamId}:routes:` });
-    const routes: GTFSRoute[] = [];
-    
-    for (const [key, value] of keys) {
-      routes.push(...(value as GTFSRoute[]));
-    }
+  private async queryRoutes(params?: Record<string, any>): Promise<GTFSRoute[]> {
+    let routes = Array.from(this.gtfsData.routes.values());
     
     // Apply filters
-    let filtered = routes;
     if (params?.search) {
       const search = params.search.toLowerCase();
-      filtered = routes.filter(r => 
+      routes = routes.filter(r => 
         r.route_short_name?.toLowerCase().includes(search) ||
         r.route_long_name?.toLowerCase().includes(search)
       );
     }
     
-    return filtered.slice(0, params?.limit || 100);
+    return routes.slice(0, params?.limit || 100);
   }
 
-  private async queryTrips(streamId: string, params?: Record<string, any>): Promise<GTFSTrip[]> {
-    const keys = await this.ctx.storage.list({ prefix: `${streamId}:trips:` });
-    const trips: GTFSTrip[] = [];
-    
-    for (const [key, value] of keys) {
-      trips.push(...(value as GTFSTrip[]));
-    }
+  private async queryTrips(params?: Record<string, any>): Promise<GTFSTrip[]> {
+    let trips = Array.from(this.gtfsData.trips.values());
     
     // Apply filters
-    let filtered = trips;
     if (params?.route_id) {
-      filtered = trips.filter(t => t.route_id === params.route_id);
+      trips = trips.filter(t => t.route_id === params.route_id);
     }
     
-    return filtered.slice(0, params?.limit || 100);
+    return trips.slice(0, params?.limit || 100);
   }
 
-  private async queryNearbyStops(streamId: string, params?: Record<string, any>): Promise<GTFSStop[]> {
+  private async queryNearbyStops(params?: Record<string, any>): Promise<GTFSStop[]> {
     if (!params?.lat || !params?.lon) {
       throw new Error('Nearby query requires lat and lon parameters');
     }
     
     const { lat, lon, radius = 1000 } = params;
-    const stops = await this.queryStops(streamId);
+    const stops = Array.from(this.gtfsData.stops.values());
     
     const nearby = stops
       .map(stop => ({
@@ -687,12 +858,89 @@ export class GTFSState extends DurableObject {
 
   /**
    * Handle Durable Object fetch requests
+   * Implements API endpoints expected by Worker:
+   * - GET /api/gtfs/data - Returns complete GTFS data
+   * - POST /api/gtfs/update - Triggers GTFS data update
+   * - GET /api/gtfs/metadata - Returns metadata about the GTFS data
    */
   async fetch(request: Request): Promise<Response> {
     await this.initialize();
     
     const url = new URL(request.url);
     
+    // GET /api/gtfs/data - Return all GTFS data from memory
+    if (url.pathname === '/api/gtfs/data' && request.method === 'GET') {
+      try {
+        if (this.metadata.status !== 'ready') {
+          return Response.json({
+            success: false,
+            error: `Data not ready. Status: ${this.metadata.status}`,
+            metadata: this.metadata
+          }, { status: 503 });
+        }
+
+        const data = this.getGTFSData();
+        
+        return Response.json({
+          success: true,
+          data,
+          metadata: this.metadata,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        return Response.json({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          timestamp: new Date().toISOString()
+        }, { status: 500 });
+      }
+    }
+
+    // POST /api/gtfs/update - Update GTFS data
+    if (url.pathname === '/api/gtfs/update' && request.method === 'POST') {
+      try {
+        const body = await request.json() as { url?: string };
+        const feedUrl = body.url || (this.ctx.env as Env).GTFS_FEED_URL;
+        
+        if (!feedUrl) {
+          return Response.json({
+            success: false,
+            error: 'No GTFS feed URL provided'
+          }, { status: 400 });
+        }
+
+        const result = await this.processGTFSStreaming({
+          url: feedUrl,
+          operation: 'stream',
+          options: {
+            streaming: true,
+            batchSize: BATCH_SIZE
+          }
+        });
+        
+        return Response.json(result, {
+          status: result.success ? 200 : 400
+        });
+      } catch (error) {
+        return Response.json({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          timestamp: new Date().toISOString()
+        }, { status: 500 });
+      }
+    }
+
+    // GET /api/gtfs/metadata - Return metadata
+    if (url.pathname === '/api/gtfs/metadata' && request.method === 'GET') {
+      return Response.json({
+        success: true,
+        metadata: this.metadata,
+        memoryUsage: this.estimateMemoryUsage(),
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Legacy endpoints for backwards compatibility
     if (url.pathname === '/process' && request.method === 'POST') {
       try {
         const body = await request.json() as GTFSProcessRequest;
@@ -733,8 +981,9 @@ export class GTFSState extends DurableObject {
       return Response.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
-        memoryUsage: this.memoryUsage,
-        activeStreams: this.processingState.size
+        memoryUsage: this.estimateMemoryUsage(),
+        activeStreams: this.processingState.size,
+        dataStatus: this.metadata.status
       });
     }
     
@@ -744,6 +993,7 @@ export class GTFSState extends DurableObject {
 
 /**
  * Worker entry point
+ * Routes requests to appropriate endpoints
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -760,7 +1010,26 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
     
-    // Route to Durable Object
+    // Route API requests to Durable Object
+    if (url.pathname.startsWith('/api/gtfs/')) {
+      const id = env.GTFS_STATE.idFromName('default');
+      const stub = env.GTFS_STATE.get(id);
+      const response = await stub.fetch(request);
+      
+      // Add CORS headers to response
+      const newHeaders = new Headers(response.headers);
+      Object.entries(corsHeaders).forEach(([key, value]) => {
+        newHeaders.set(key, value);
+      });
+      
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: newHeaders
+      });
+    }
+    
+    // Route legacy endpoints to Durable Object
     if (url.pathname.startsWith('/gtfs/')) {
       const id = env.GTFS_STATE.idFromName('default');
       const stub = env.GTFS_STATE.get(id);
@@ -773,7 +1042,13 @@ export default {
         status: 'healthy',
         timestamp: new Date().toISOString(),
         version: '2.0.0',
-        durableObjects: true
+        durableObjects: true,
+        memoryCapacity: '8GB',
+        endpoints: {
+          data: 'GET /api/gtfs/data',
+          update: 'POST /api/gtfs/update',
+          metadata: 'GET /api/gtfs/metadata'
+        }
       }, { headers: corsHeaders });
     }
     
@@ -783,18 +1058,24 @@ export default {
         service: 'GTFS Container - Cloudflare Durable Objects',
         version: '2.0.0',
         runtime: 'Cloudflare Workers',
+        memoryCapacity: '8GB',
         endpoints: {
           health: 'GET /health',
-          process: 'POST /gtfs/process',
-          query: 'POST /gtfs/query'
+          data: 'GET /api/gtfs/data',
+          update: 'POST /api/gtfs/update',
+          metadata: 'GET /api/gtfs/metadata',
+          process: 'POST /gtfs/process (legacy)',
+          query: 'POST /gtfs/query (legacy)'
         },
         features: [
           'Cloudflare Durable Objects',
           'Streaming ZIP extraction',
           'Memory-efficient processing (186MB+ files)',
+          '8GB container memory for GTFS data',
           'Chunked batch processing',
           'KV caching',
-          'Persistent state storage'
+          'Persistent state storage',
+          'In-memory data access'
         ]
       }, { headers: corsHeaders });
     }
