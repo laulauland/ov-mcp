@@ -1,5 +1,5 @@
 # ============================================================================
-# Multi-stage Dockerfile for Bun-based GTFS Parser Container
+# Multi-stage Dockerfile for Bun-based GTFS Container Server
 # Optimized for production deployment with minimal image size
 # ============================================================================
 
@@ -12,13 +12,13 @@ WORKDIR /app
 
 # Copy package manager files
 COPY package.json bun.lock ./
-COPY packages/gtfs-parser/package.json ./packages/gtfs-parser/
+COPY packages/gtfs-container/package.json ./packages/gtfs-container/
 
 # Install all dependencies (including dev dependencies for build)
 RUN bun install --frozen-lockfile
 
 # ============================================================================
-# Stage 2: Builder - Build the application
+# Stage 2: Builder - Prepare the application
 # ============================================================================
 FROM oven/bun:1.1-alpine AS builder
 
@@ -26,13 +26,10 @@ WORKDIR /app
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/gtfs-parser/node_modules ./packages/gtfs-parser/node_modules
+COPY --from=deps /app/packages/gtfs-container/node_modules ./packages/gtfs-container/node_modules
 
 # Copy source code and configuration files
 COPY . .
-
-# Build the GTFS parser package
-RUN bun run build:gtfs
 
 # Remove development dependencies to reduce size
 RUN bun install --production --frozen-lockfile
@@ -58,9 +55,8 @@ WORKDIR /app
 # Copy production node_modules from builder
 COPY --from=builder --chown=bunuser:bunuser /app/node_modules ./node_modules
 
-# Copy built application
-COPY --from=builder --chown=bunuser:bunuser /app/packages/gtfs-parser/dist ./packages/gtfs-parser/dist
-COPY --from=builder --chown=bunuser:bunuser /app/packages/gtfs-parser/package.json ./packages/gtfs-parser/
+# Copy gtfs-container application
+COPY --from=builder --chown=bunuser:bunuser /app/packages/gtfs-container ./packages/gtfs-container
 COPY --from=builder --chown=bunuser:bunuser /app/package.json ./
 
 # Create directory for GTFS data with proper permissions
@@ -90,10 +86,10 @@ HEALTHCHECK --interval=30s \
 
 # Labels for better container metadata
 LABEL maintainer="Laurynas Keturakis" \
-      org.opencontainers.image.title="GTFS Parser Container" \
-      org.opencontainers.image.description="Production-ready Bun-based GTFS data parser" \
+      org.opencontainers.image.title="GTFS Container Server" \
+      org.opencontainers.image.description="Production-ready Bun-based GTFS container server" \
       org.opencontainers.image.vendor="laulauland" \
       org.opencontainers.image.source="https://github.com/laulauland/ov-mcp"
 
-# Default command to run the application
-CMD ["bun", "run", "packages/gtfs-parser/dist/index.js"]
+# Default command to run the container server
+CMD ["bun", "run", "packages/gtfs-container/src/container-server.ts"]
