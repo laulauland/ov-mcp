@@ -43,3 +43,8 @@ new_classes = ["OVMcpAgent"]
 [[migrations]]
 tag = "v2"
 deleted_classes = ["OVMcpAgent"]
+
+# Migration v3: Add GtfsProcessorContainer class
+[[migrations]]
+tag = "v3"
+new_classes = ["GtfsProcessorContainer"]
