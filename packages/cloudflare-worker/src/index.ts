@@ -18,6 +18,9 @@ const CACHE_TTL = 60 * 60 * 24; // 24 hours in seconds
 const GTFS_DATA_KEY = 'gtfs:data:v1';
 const GTFS_METADATA_KEY = 'gtfs:metadata:v1';
 
+// Memory limit threshold (in MB) for Cloudflare Worker
+const MEMORY_LIMIT_WARNING_MB = 100;
+
 // Environment interface for Cloudflare Worker
 export interface Env {
   GTFS_CACHE?: KVNamespace;
@@ -88,7 +91,17 @@ function formatRoute(route: GTFSRoute) {
 }
 
 /**
- * Get GTFS data from KV cache, with lazy loading on first request
+ * Estimate memory usage (rough approximation)
+ */
+function getEstimatedMemoryUsageMB(): number {
+  if (typeof performance !== 'undefined' && (performance as any).memory) {
+    return (performance as any).memory.usedJSHeapSize / (1024 * 1024);
+  }
+  return 0;
+}
+
+/**
+ * Get GTFS data from KV cache, with lazy loading on first request using streaming
  */
 async function getGTFSData(): Promise<GTFSFeed | null> {
   if (!globalEnv?.GTFS_CACHE) {
@@ -100,17 +113,46 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
     // Check if data exists in KV
     const cached = await globalEnv.GTFS_CACHE.get(GTFS_DATA_KEY, 'json');
     if (cached) {
+      console.log('GTFS data loaded from cache');
       return cached as GTFSFeed;
     }
 
-    // Lazy load: download and parse GTFS data on first request
-    console.log('GTFS data not in cache, fetching from source...');
+    // Lazy load: download and parse GTFS data on first request using streaming
+    console.log('GTFS data not in cache, fetching from source using streaming...');
     const feedUrl = globalEnv.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
+    
+    const startTime = Date.now();
+    const initialMemory = getEstimatedMemoryUsageMB();
+    
+    console.log(`[Progress] Starting GTFS download from ${feedUrl}`);
+    console.log(`[Memory] Initial usage: ${initialMemory.toFixed(2)} MB`);
 
-    const feed = await GTFSDownloader.fetchAndParse(feedUrl);
-    console.log(`Fetched: ${feed.stops.length} stops, ${feed.routes.length} routes`);
+    // Use streaming method with progress logging
+    const feed = await GTFSDownloader.fetchAndParseStream(feedUrl, {
+      onProgress: (fileName: string, entriesProcessed: number) => {
+        const currentMemory = getEstimatedMemoryUsageMB();
+        console.log(`[Progress] Processing ${fileName}: ${entriesProcessed} entries (Memory: ${currentMemory.toFixed(2)} MB)`);
+        
+        // Check memory limits
+        if (currentMemory > MEMORY_LIMIT_WARNING_MB) {
+          console.warn(`[Memory Warning] Usage exceeds ${MEMORY_LIMIT_WARNING_MB} MB: ${currentMemory.toFixed(2)} MB`);
+        }
+      },
+      onFileComplete: (fileName: string, totalEntries: number) => {
+        console.log(`[Progress] Completed ${fileName}: ${totalEntries} entries processed`);
+      }
+    });
+
+    const endTime = Date.now();
+    const finalMemory = getEstimatedMemoryUsageMB();
+    const duration = ((endTime - startTime) / 1000).toFixed(2);
+    
+    console.log(`[Progress] GTFS parsing complete in ${duration}s`);
+    console.log(`[Memory] Final usage: ${finalMemory.toFixed(2)} MB (Delta: ${(finalMemory - initialMemory).toFixed(2)} MB)`);
+    console.log(`[Summary] Fetched: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
 
     // Store in KV for future requests
+    console.log('[Progress] Storing GTFS data in KV cache...');
     await globalEnv.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
       expirationTtl: CACHE_TTL * 7, // 7 days
     });
@@ -123,15 +165,28 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
       tripCount: feed.trips.length,
       agencyCount: feed.agencies.length,
       triggeredBy: 'lazy-load',
+      processingTimeSeconds: parseFloat(duration),
+      memoryUsageMB: finalMemory,
     };
     await globalEnv.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
       expirationTtl: CACHE_TTL * 7,
     });
 
-    console.log('GTFS data cached successfully');
+    console.log('[Progress] GTFS data cached successfully');
     return feed;
   } catch (error) {
-    console.error('Error fetching GTFS data:', error);
+    const currentMemory = getEstimatedMemoryUsageMB();
+    console.error('[Error] Failed to fetch GTFS data:', error);
+    console.error(`[Memory] Memory usage at error: ${currentMemory.toFixed(2)} MB`);
+    
+    // Check if error is memory-related
+    if (error instanceof Error) {
+      if (error.message.includes('memory') || error.message.includes('heap') || 
+          error.message.includes('allocation') || currentMemory > MEMORY_LIMIT_WARNING_MB) {
+        console.error('[Memory Error] Possible memory limit exceeded. Consider optimizing data processing or increasing worker limits.');
+      }
+    }
+    
     return null;
   }
 }
@@ -422,7 +477,7 @@ export default {
   },
 
   /**
-   * Scheduled handler for automatic GTFS data updates
+   * Scheduled handler for automatic GTFS data updates using streaming
    * Triggered by cron: every Sunday at 3am UTC
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -434,14 +489,40 @@ export default {
     }
 
     try {
-      // Download and parse fresh GTFS data
+      // Download and parse fresh GTFS data using streaming
       const feedUrl = env.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
-      console.log('Downloading GTFS data from:', feedUrl);
+      console.log('[Scheduled] Downloading GTFS data from:', feedUrl);
 
-      const feed = await GTFSDownloader.fetchAndParse(feedUrl);
-      console.log(`Downloaded: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips`);
+      const startTime = Date.now();
+      const initialMemory = getEstimatedMemoryUsageMB();
+      console.log(`[Scheduled][Memory] Initial usage: ${initialMemory.toFixed(2)} MB`);
+
+      // Use streaming method with progress logging
+      const feed = await GTFSDownloader.fetchAndParseStream(feedUrl, {
+        onProgress: (fileName: string, entriesProcessed: number) => {
+          const currentMemory = getEstimatedMemoryUsageMB();
+          console.log(`[Scheduled][Progress] Processing ${fileName}: ${entriesProcessed} entries (Memory: ${currentMemory.toFixed(2)} MB)`);
+          
+          // Check memory limits
+          if (currentMemory > MEMORY_LIMIT_WARNING_MB) {
+            console.warn(`[Scheduled][Memory Warning] Usage exceeds ${MEMORY_LIMIT_WARNING_MB} MB: ${currentMemory.toFixed(2)} MB`);
+          }
+        },
+        onFileComplete: (fileName: string, totalEntries: number) => {
+          console.log(`[Scheduled][Progress] Completed ${fileName}: ${totalEntries} entries processed`);
+        }
+      });
+
+      const endTime = Date.now();
+      const finalMemory = getEstimatedMemoryUsageMB();
+      const duration = ((endTime - startTime) / 1000).toFixed(2);
+      
+      console.log(`[Scheduled][Progress] GTFS parsing complete in ${duration}s`);
+      console.log(`[Scheduled][Memory] Final usage: ${finalMemory.toFixed(2)} MB (Delta: ${(finalMemory - initialMemory).toFixed(2)} MB)`);
+      console.log(`[Scheduled][Summary] Downloaded: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
 
       // Store in KV
+      console.log('[Scheduled][Progress] Storing GTFS data in KV cache...');
       await env.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
         expirationTtl: CACHE_TTL * 7, // 7 days for scheduled updates
       });
@@ -454,14 +535,27 @@ export default {
         tripCount: feed.trips.length,
         agencyCount: feed.agencies.length,
         triggeredBy: 'scheduled',
+        processingTimeSeconds: parseFloat(duration),
+        memoryUsageMB: finalMemory,
       };
       await env.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
         expirationTtl: CACHE_TTL * 7,
       });
 
-      console.log('GTFS data updated successfully:', metadata);
+      console.log('[Scheduled][Success] GTFS data updated successfully:', metadata);
     } catch (error) {
-      console.error('Failed to update GTFS data:', error);
+      const currentMemory = getEstimatedMemoryUsageMB();
+      console.error('[Scheduled][Error] Failed to update GTFS data:', error);
+      console.error(`[Scheduled][Memory] Memory usage at error: ${currentMemory.toFixed(2)} MB`);
+      
+      // Check if error is memory-related
+      if (error instanceof Error) {
+        if (error.message.includes('memory') || error.message.includes('heap') || 
+            error.message.includes('allocation') || currentMemory > MEMORY_LIMIT_WARNING_MB) {
+          console.error('[Scheduled][Memory Error] Possible memory limit exceeded. Consider optimizing data processing or increasing worker limits.');
+        }
+      }
+      
       throw error; // Re-throw to mark the scheduled event as failed
     }
   },
