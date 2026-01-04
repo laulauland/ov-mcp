@@ -24,7 +24,7 @@ const CONTAINER_TIMEOUT_MS = 180000; // 3 minutes for container operations
 
 // Environment interface for Cloudflare Worker
 export interface Env {
-  CONTAINER_SERVICE_URL: string; // URL of the container service
+  GTFS_CONTAINER: Fetcher; // Cloudflare Container Service binding
   ENVIRONMENT?: string;
 }
 
@@ -39,30 +39,27 @@ interface IGTFSContainer {
 }
 
 /**
- * HTTP-based Container client - calls remote container service
+ * Container client using Cloudflare Service Binding
  * All GTFS processing happens in the 8GB container service
+ * Uses proper Worker-to-Container communication via service binding
  */
 class GTFSContainerClient implements IGTFSContainer {
-  private env: Env;
-  private baseUrl: string;
+  private container: Fetcher;
 
-  constructor(env: Env) {
-    this.env = env;
-    this.baseUrl = env.CONTAINER_SERVICE_URL;
-    
-    if (!this.baseUrl) {
-      throw new Error('CONTAINER_SERVICE_URL not configured');
-    }
+  constructor(container: Fetcher) {
+    this.container = container;
   }
 
   /**
-   * Make HTTP request to container service with timeout and error handling
+   * Make request to container service with timeout and error handling
+   * Uses container.fetch() for direct Worker-to-Container communication
    */
   private async callContainer<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const url = `${this.baseUrl}${endpoint}`;
+    // Container bindings use relative URLs
+    const url = `http://container${endpoint}`;
     
     console.log(`[Container Client] Calling container service: ${endpoint}`);
     const startTime = Date.now();
@@ -71,7 +68,8 @@ class GTFSContainerClient implements IGTFSContainer {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), CONTAINER_TIMEOUT_MS);
 
-      const response = await fetch(url, {
+      // Use container binding's fetch method for Worker-to-Container communication
+      const response = await this.container.fetch(url, {
         ...options,
         signal: controller.signal,
         headers: {
@@ -230,10 +228,13 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 /**
- * Get container client - creates HTTP client for this request context
+ * Get container client - creates client using the service binding
  */
 function getContainer(env: Env): IGTFSContainer {
-  return new GTFSContainerClient(env);
+  if (!env.GTFS_CONTAINER) {
+    throw new Error('GTFS_CONTAINER binding not configured');
+  }
+  return new GTFSContainerClient(env.GTFS_CONTAINER);
 }
 
 /**
@@ -414,7 +415,7 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
   // Health check endpoint
   if (url.pathname === '/health') {
     const metadata = await container.getMetadata();
-    const containerConfigured = !!env.CONTAINER_SERVICE_URL;
+    const containerConfigured = !!env.GTFS_CONTAINER;
 
     return new Response(
       JSON.stringify({
@@ -422,14 +423,14 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
         environment: env.ENVIRONMENT || 'development',
         timestamp: new Date().toISOString(),
         container_configured: containerConfigured,
-        container_service_url: env.CONTAINER_SERVICE_URL || 'not configured',
+        container_binding: 'GTFS_CONTAINER (Service Binding)',
         gtfs_data_available: metadata !== null,
         gtfs_metadata: metadata,
         architecture: {
-          mode: 'http-container-service',
+          mode: 'cloudflare-service-binding',
           worker_role: 'lightweight-proxy',
           container_role: '8GB-service-handles-all-processing',
-          description: 'Worker delegates all GTFS operations to container service via HTTP',
+          description: 'Worker delegates all GTFS operations to container service via Cloudflare Service Binding',
         },
       }),
       {
@@ -455,10 +456,10 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
           streamable_http: '/mcp (recommended)',
         },
         architecture: {
-          mode: 'http-container-service',
+          mode: 'cloudflare-service-binding',
           worker_role: 'lightweight-proxy',
           container_role: '8GB-service-handles-all-processing',
-          description: 'All GTFS download, parsing, and caching happens in the container service. Worker is a lightweight proxy.',
+          description: 'All GTFS download, parsing, and caching happens in the container service. Worker is a lightweight proxy using Cloudflare Service Binding.',
         },
         documentation: 'https://github.com/laulauland/ov-mcp',
       }),
@@ -470,19 +471,19 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
 }
 
 /**
- * Main Worker export using HTTP-based container service pattern
+ * Main Worker export using Cloudflare Service Binding pattern
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Validate container service configuration
-    if (!env.CONTAINER_SERVICE_URL) {
-      console.error('[Worker] CONTAINER_SERVICE_URL not configured');
+    // Validate container service binding
+    if (!env.GTFS_CONTAINER) {
+      console.error('[Worker] GTFS_CONTAINER binding not configured');
       return new Response(
         JSON.stringify({
           error: 'Container service not configured',
-          message: 'CONTAINER_SERVICE_URL environment variable is required',
+          message: 'GTFS_CONTAINER service binding is required. Please configure it in wrangler.toml',
         }),
         {
           status: 500,
@@ -563,8 +564,8 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('[Scheduled] GTFS update triggered at:', new Date(event.scheduledTime).toISOString());
 
-    if (!env.CONTAINER_SERVICE_URL) {
-      console.error('[Scheduled] CONTAINER_SERVICE_URL not configured - skipping scheduled update');
+    if (!env.GTFS_CONTAINER) {
+      console.error('[Scheduled] GTFS_CONTAINER binding not configured - skipping scheduled update');
       return;
     }
 
