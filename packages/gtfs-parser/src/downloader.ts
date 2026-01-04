@@ -83,7 +83,8 @@ export class GTFSDownloader {
 
       let filesProcessed = 0;
 
-      // Create streaming unzip instance
+      // Create streaming unzip instance with DEFLATE decompressor registered
+      // Compression type 8 is DEFLATE - the most common ZIP compression method
       const unzip = new Unzip((file) => {
         const filename = file.name;
         
@@ -92,7 +93,7 @@ export class GTFSDownloader {
           return;
         }
 
-        console.log(`Processing: ${filename}`);
+        console.log(`Processing: ${filename} (compression: ${file.compression})`);
         
         // Initialize buffer for this file
         fileBuffers.set(filename, []);
@@ -123,6 +124,10 @@ export class GTFSDownloader {
         // Start decompression for this file
         file.start();
       });
+
+      // Register AsyncUnzipInflate as the DEFLATE decompressor (compression type 8)
+      // This is essential for handling DEFLATE-compressed files in ZIP archives
+      unzip.register(AsyncUnzipInflate);
 
       // Process the stream
       const reader = stream.getReader();
