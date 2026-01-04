@@ -3,20 +3,28 @@
   "version": "0.2.0",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "gtfs-container"
   ],
   "scripts": {
     "build": "bun run build:gtfs && bun run build:worker",
     "build:gtfs": "cd packages/gtfs-parser && bun run build",
     "build:worker": "cd packages/cloudflare-worker && bun run build",
+    "build:container": "cd gtfs-container && docker build -t gtfs-container .",
     "dev": "cd packages/cloudflare-worker && bun run dev",
+    "dev:container": "cd gtfs-container && docker-compose up",
     "deploy": "cd packages/cloudflare-worker && bun run deploy",
     "test": "bun run test:gtfs",
     "test:gtfs": "cd packages/gtfs-parser && bun test",
+    "test:container": "cd gtfs-container && bun test",
     "typecheck": "bun run typecheck:worker && bun run typecheck:gtfs",
     "typecheck:worker": "cd packages/cloudflare-worker && bun run typecheck",
     "typecheck:gtfs": "cd packages/gtfs-parser && bun run typecheck",
-    "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
+    "clean": "rm -rf packages/*/dist packages/*/node_modules gtfs-container/dist gtfs-container/node_modules node_modules",
+    "container:start": "cd gtfs-container && docker-compose up -d",
+    "container:stop": "cd gtfs-container && docker-compose down",
+    "container:logs": "cd gtfs-container && docker-compose logs -f",
+    "container:rebuild": "cd gtfs-container && docker-compose up -d --build"
   },
   "devDependencies": {
     "@types/bun": "latest",
