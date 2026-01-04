@@ -14,6 +14,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
+import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery } from '@ov-mcp/gtfs-parser';
 
@@ -35,6 +36,48 @@ export interface Env {
 
 // Global variable to store env for use in tools
 let globalEnv: Env | null = null;
+
+/**
+ * Container class for gtfs-processor-bun
+ * Cloudflare Containers require a class definition in the Worker code
+ */
+export class GtfsProcessorContainer extends WorkerEntrypoint<Env> {
+  async fetch(request: Request): Promise<Response> {
+    // This container handles GTFS processing requests
+    // The actual implementation runs in the gtfs-processor-bun container
+    const url = new URL(request.url);
+    
+    if (url.pathname === '/process' && request.method === 'POST') {
+      try {
+        const body = await request.json() as {
+          url: string;
+          operation: string;
+          options?: Record<string, unknown>;
+        };
+        
+        // Forward to the actual container implementation
+        // This is a placeholder that should be overridden by the container binding
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Container not properly configured - this should be handled by gtfs-processor-bun'
+        }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+    
+    return new Response('Not Found', { status: 404 });
+  }
+}
 
 /**
  * Helper functions for formatting
