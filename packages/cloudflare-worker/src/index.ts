@@ -118,7 +118,8 @@ async function processGTFSInContainer(feedUrl: string): Promise<GTFSFeed> {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        feedUrl: feedUrl,
+        url: feedUrl,
+        operation: 'process',
         options: {
           includeProgress: true,
         }
