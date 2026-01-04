@@ -7,16 +7,17 @@
  * Deploy with `wrangler deploy` to test
  * 
  * ARCHITECTURE:
- * - Worker: Lightweight proxy handling API requests, delegates to Durable Object
- * - Durable Object: Handles all GTFS processing and caching
- * - KV Storage: Managed entirely by the Durable Object
- * - All memory-intensive operations (download, parse, cache) happen in the DO
+ * - Worker: Lightweight proxy handling API requests, delegates to Container
+ * - Container: Handles all GTFS processing and caching
+ * - KV Storage: Managed entirely by the Container
+ * - All memory-intensive operations (download, parse, cache) happen in the Container
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 import { DurableObject } from "cloudflare:workers";
+import { getContainer } from "@cloudflare/containers";
 
 import { GTFSFeed, GTFSStop, GTFSRoute } from '@ov-mcp/gtfs-parser';
 
@@ -270,19 +271,6 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 /**
- * Get container client - creates client using the Durable Object namespace
- */
-function getContainer(env: Env): IGTFSContainer {
-  if (!env.GTFS_CONTAINER) {
-    throw new Error('GTFS_CONTAINER namespace binding not configured');
-  }
-  
-  // Use a fixed ID for the singleton Durable Object
-  const id = env.GTFS_CONTAINER.idFromName('gtfs-container');
-  return new GTFSContainerClient(env.GTFS_CONTAINER, id);
-}
-
-/**
  * Create the MCP Server with all tools registered
  */
 function createServer(container: IGTFSContainer): McpServer {
@@ -516,89 +504,15 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
 }
 
 /**
- * Main Worker export using Durable Object pattern
+ * Main Worker export using official @cloudflare/containers package
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Validate Durable Object namespace binding
-    if (!env.GTFS_CONTAINER) {
-      console.error('[Worker] GTFS_CONTAINER namespace binding not configured');
-      return new Response(
-        JSON.stringify({
-          error: 'Durable Object not configured',
-          message: 'GTFS_CONTAINER namespace binding is required. Please configure it in wrangler.toml',
-        }),
-        {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-    }
-
-    // Get container client for this request
-    const container = getContainer(env);
-
-    // Handle CORS preflight
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, mcp-session-id, MCP-Protocol-Version, Accept',
-          'Access-Control-Expose-Headers': 'mcp-session-id',
-          'Access-Control-Max-Age': '86400',
-        },
-      });
-    }
-
-    // Check for utility endpoints first (health, root)
-    const utilityResponse = await handleUtilityRequest(request, container, env, url);
-    if (utilityResponse) {
-      return utilityResponse;
-    }
-
-    // Route MCP requests through createMcpHandler
-    if (url.pathname === '/mcp') {
-      try {
-        // Create MCP server with container client
-        const mcpServer = createServer(container);
-        
-        // Create handler with the server
-        const mcpHandler = createMcpHandler(mcpServer, {
-          route: "/mcp",
-          corsOptions: {
-            origin: '*',
-            headers: 'Content-Type, Accept, Authorization, mcp-session-id, MCP-Protocol-Version',
-            methods: 'GET, POST, DELETE, OPTIONS',
-            exposeHeaders: 'mcp-session-id',
-            maxAge: 86400,
-          },
-        });
-        
-        return await mcpHandler(request, env, ctx);
-      } catch (error) {
-        console.error('MCP handler error:', error);
-        return new Response(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            error: {
-              code: -32603,
-              message: error instanceof Error ? error.message : 'Internal server error',
-            },
-            id: null,
-          }),
-          {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
-      }
-    }
-
-    return new Response('Not Found', { status: 404 });
+    // Use official @cloudflare/containers package
+    const container = getContainer(env, { name: 'GTFS_CONTAINER' });
+    return container.fetch(request);
   },
 
   /**
@@ -615,7 +529,10 @@ export default {
     }
 
     // Get container client for scheduled job
-    const container = getContainer(env);
+    const container = new GTFSContainerClient(
+      env.GTFS_CONTAINER,
+      env.GTFS_CONTAINER.idFromName('gtfs-container')
+    );
 
     try {
       console.log('[Scheduled] Calling Durable Object to update GTFS data...');
