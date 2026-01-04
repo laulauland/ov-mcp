@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  gtfs-parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: ov-mcp-gtfs
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      - NODE_ENV=production
+      - GTFS_DATA_DIR=/data
+      - PORT=3000
+      # Add any additional environment variables from .env file
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+      - GTFS_CACHE_KV_ID=${GTFS_CACHE_KV_ID:-}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    
+    # Port mapping
+    ports:
+      - "3000:3000"
+    
+    # Volumes for persistent data
+    volumes:
+      # GTFS data directory - persists downloaded GTFS files
+      - gtfs-data:/data
+      # Optional: Mount local GTFS files
+      # - ./gtfs-files:/data/gtfs:ro
+      # Optional: Mount logs directory
+      - gtfs-logs:/app/logs
+    
+    # Networks
+    networks:
+      - gtfs-network
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "bun", "--version"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Named volumes for data persistence
+volumes:
+  gtfs-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/gtfs
+  gtfs-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./logs
+
+# Network configuration
+networks:
+  gtfs-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
