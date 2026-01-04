@@ -13,7 +13,7 @@ id = "f1f8a39a19554b9fa733b48a1cb136c9"
 binding = "GTFS_PROCESSOR"
 name = "gtfs-processor-bun"
 image = "oven/bun:latest"
-command = ["bun", "run", "process-gtfs.ts"]
+command = ["bun", "run", "start"]
 instance_type = 'standard-3'
 
 # Environment variables
