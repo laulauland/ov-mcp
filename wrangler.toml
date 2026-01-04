@@ -23,11 +23,9 @@ crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 enabled = true
 
 # Cloudflare Containers configuration
-[[containers]]
-class_name = "GTFSContainer"
-script_name = "ov-mcp"
-image = "./packages/gtfs-container/Dockerfile"
-instances = 3
+[containers]
+GTFSContainer.image = "./packages/gtfs-container/Dockerfile"
+GTFSContainer.max_instances = 5
 
 # Durable Objects bindings for Containers
 [[durable_objects.bindings]]
@@ -38,4 +36,4 @@ script_name = "ov-mcp"
 # Migrations for Container with SQLite
 [[migrations]]
 tag = "v1"
-newsqliteclasses = ["GTFSContainer"]
+new_classes = ["GTFSContainer"]
