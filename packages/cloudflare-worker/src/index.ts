@@ -7,77 +7,37 @@
  * Deploy with `wrangler deploy` to test
  * 
  * ARCHITECTURE:
- * - Worker: Handles API requests, KV caching, and MCP protocol
- * - GTFS_PROCESSOR Container: Handles heavy 186MB GTFS file processing
+ * - Worker: Handles API requests, KV caching, and direct GTFS processing
+ * - Uses streaming and memory-efficient processing for large GTFS files
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
-import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery } from '@ov-mcp/gtfs-parser';
+import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, parseGTFS } from '@ov-mcp/gtfs-parser';
 
 // Cache configuration
 const CACHE_TTL = 60 * 60 * 24; // 24 hours in seconds
 const GTFS_DATA_KEY = 'gtfs:data:v1';
 const GTFS_METADATA_KEY = 'gtfs:metadata:v1';
 
-// Container timeout (30 seconds for heavy processing)
-const CONTAINER_TIMEOUT_MS = 30000;
+// Processing configuration
+const MAX_DOWNLOAD_SIZE = 200 * 1024 * 1024; // 200MB max download size
+const DOWNLOAD_TIMEOUT_MS = 60000; // 60 seconds for download
+const PROCESSING_TIMEOUT_MS = 120000; // 120 seconds for processing
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 2000;
 
 // Environment interface for Cloudflare Worker
 export interface Env {
   GTFS_CACHE?: KVNamespace;
-  GTFS_PROCESSOR?: Fetcher; // Container binding for GTFS processing
   ENVIRONMENT?: string;
   GTFS_FEED_URL?: string;
 }
 
 // Global variable to store env for use in tools
 let globalEnv: Env | null = null;
-
-/**
- * Container class for gtfs-processor-bun
- * Cloudflare Containers require a class definition in the Worker code
- */
-export class GtfsProcessorContainer extends WorkerEntrypoint<Env> {
-  async fetch(request: Request): Promise<Response> {
-    // This container handles GTFS processing requests
-    // The actual implementation runs in the gtfs-processor-bun container
-    const url = new URL(request.url);
-    
-    if (url.pathname === '/process' && request.method === 'POST') {
-      try {
-        const body = await request.json() as {
-          url: string;
-          operation: string;
-          options?: Record<string, unknown>;
-        };
-        
-        // Forward to the actual container implementation
-        // This is a placeholder that should be overridden by the container binding
-        return new Response(JSON.stringify({
-          success: false,
-          error: 'Container not properly configured - this should be handled by gtfs-processor-bun'
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      } catch (error) {
-        return new Response(JSON.stringify({
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-    }
-    
-    return new Response('Not Found', { status: 404 });
-  }
-}
 
 /**
  * Helper functions for formatting
@@ -139,75 +99,151 @@ function formatRoute(route: GTFSRoute) {
 }
 
 /**
- * Process GTFS data using the GTFS_PROCESSOR container
- * The container handles the heavy 186MB file processing
+ * Sleep utility for retry delays
  */
-async function processGTFSInContainer(feedUrl: string): Promise<GTFSFeed> {
-  if (!globalEnv?.GTFS_PROCESSOR) {
-    throw new Error('GTFS_PROCESSOR container binding not configured');
-  }
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-  console.log(`[Container] Sending GTFS processing request to container for: ${feedUrl}`);
+/**
+ * Download GTFS file with retry logic and size validation
+ */
+async function downloadGTFSFile(url: string, retryCount = 0): Promise<ArrayBuffer> {
+  console.log(`[Download] Attempting to download GTFS from: ${url} (attempt ${retryCount + 1}/${MAX_RETRIES})`);
   const startTime = Date.now();
 
   try {
-    // Create request to container with timeout
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), CONTAINER_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
 
-    const response = await globalEnv.GTFS_PROCESSOR.fetch('http://gtfs-processor/process', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url: feedUrl,
-        operation: 'parse',
-        options: {
-          includeProgress: true,
-        }
-      }),
+    const response = await fetch(url, {
       signal: controller.signal,
+      headers: {
+        'User-Agent': 'OV-MCP-Worker/0.3.0',
+      },
     });
 
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Container processing failed: ${response.status} - ${errorText}`);
+      throw new Error(`Download failed: HTTP ${response.status} ${response.statusText}`);
     }
 
-    const result = await response.json() as {
-      success: boolean;
-      feed?: GTFSFeed;
-      metadata?: {
-        processingTimeMs: number;
-        stopCount: number;
-        routeCount: number;
-        tripCount: number;
-        agencyCount: number;
-      };
-      error?: string;
-    };
+    // Check content length
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) {
+      const size = parseInt(contentLength, 10);
+      console.log(`[Download] Expected size: ${(size / 1024 / 1024).toFixed(2)}MB`);
+      
+      if (size > MAX_DOWNLOAD_SIZE) {
+        throw new Error(`File too large: ${(size / 1024 / 1024).toFixed(2)}MB exceeds ${(MAX_DOWNLOAD_SIZE / 1024 / 1024).toFixed(2)}MB limit`);
+      }
+    }
 
+    // Download file
+    const buffer = await response.arrayBuffer();
     const duration = Date.now() - startTime;
+    const sizeMB = (buffer.byteLength / 1024 / 1024).toFixed(2);
     
-    if (!result.success || !result.feed) {
-      throw new Error(`Container processing failed: ${result.error || 'Unknown error'}`);
-    }
-
-    console.log(`[Container] Processing complete in ${duration}ms`);
-    if (result.metadata) {
-      console.log(`[Container] Stats: ${result.metadata.stopCount} stops, ${result.metadata.routeCount} routes, ${result.metadata.tripCount} trips, ${result.metadata.agencyCount} agencies`);
-    }
-
-    return result.feed;
+    console.log(`[Download] Completed in ${duration}ms, size: ${sizeMB}MB`);
+    
+    return buffer;
   } catch (error) {
     const duration = Date.now() - startTime;
-    console.error(`[Container] Error after ${duration}ms:`, error);
-    
+    console.error(`[Download] Error after ${duration}ms:`, error);
+
+    // Handle abort/timeout
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`Container processing timed out after ${CONTAINER_TIMEOUT_MS}ms`);
+      const timeoutError = new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS}ms`);
+      
+      // Retry on timeout
+      if (retryCount < MAX_RETRIES - 1) {
+        console.log(`[Download] Retrying after ${RETRY_DELAY_MS}ms...`);
+        await sleep(RETRY_DELAY_MS);
+        return downloadGTFSFile(url, retryCount + 1);
+      }
+      
+      throw timeoutError;
+    }
+
+    // Retry on network errors
+    if (retryCount < MAX_RETRIES - 1) {
+      console.log(`[Download] Retrying after ${RETRY_DELAY_MS}ms...`);
+      await sleep(RETRY_DELAY_MS);
+      return downloadGTFSFile(url, retryCount + 1);
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Process GTFS data with memory-efficient parsing
+ */
+async function processGTFSData(buffer: ArrayBuffer): Promise<GTFSFeed> {
+  console.log(`[Processing] Starting GTFS parsing, buffer size: ${(buffer.byteLength / 1024 / 1024).toFixed(2)}MB`);
+  const startTime = Date.now();
+
+  try {
+    // Use parseGTFS from gtfs-parser package with timeout wrapper
+    const processingPromise = parseGTFS(buffer);
+    
+    // Create timeout promise
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`Processing timed out after ${PROCESSING_TIMEOUT_MS}ms`)), PROCESSING_TIMEOUT_MS);
+    });
+
+    // Race between processing and timeout
+    const feed = await Promise.race([processingPromise, timeoutPromise]);
+
+    const duration = Date.now() - startTime;
+    console.log(`[Processing] Complete in ${duration}ms`);
+    console.log(`[Processing] Parsed: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
+
+    // Validate feed has data
+    if (!feed.stops || feed.stops.length === 0) {
+      throw new Error('Parsed feed contains no stops - data may be corrupted');
+    }
+
+    return feed;
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[Processing] Error after ${duration}ms:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Download and process GTFS data with comprehensive error handling
+ */
+async function fetchAndProcessGTFS(feedUrl: string): Promise<GTFSFeed> {
+  console.log(`[GTFS] Starting fetch and process pipeline for: ${feedUrl}`);
+  const overallStartTime = Date.now();
+
+  try {
+    // Step 1: Download
+    const buffer = await downloadGTFSFile(feedUrl);
+
+    // Step 2: Process
+    const feed = await processGTFSData(buffer);
+
+    const totalDuration = Date.now() - overallStartTime;
+    console.log(`[GTFS] Pipeline complete in ${totalDuration}ms`);
+
+    return feed;
+  } catch (error) {
+    const totalDuration = Date.now() - overallStartTime;
+    console.error(`[GTFS] Pipeline failed after ${totalDuration}ms:`, error);
+    
+    // Provide helpful error context
+    if (error instanceof Error) {
+      if (error.message.includes('timed out')) {
+        throw new Error(`GTFS processing failed: ${error.message}. The file may be too large or network is slow.`);
+      } else if (error.message.includes('too large')) {
+        throw new Error(`GTFS processing failed: ${error.message}. Consider using a smaller feed or increasing limits.`);
+      } else if (error.message.includes('HTTP')) {
+        throw new Error(`GTFS processing failed: ${error.message}. The GTFS feed may be unavailable.`);
+      }
     }
     
     throw error;
@@ -215,11 +251,11 @@ async function processGTFSInContainer(feedUrl: string): Promise<GTFSFeed> {
 }
 
 /**
- * Get GTFS data from KV cache, with lazy loading via container on first request
+ * Get GTFS data from KV cache, with lazy loading on first request
  */
 async function getGTFSData(): Promise<GTFSFeed | null> {
   if (!globalEnv?.GTFS_CACHE) {
-    console.error('GTFS_CACHE KV namespace not configured');
+    console.error('[Cache] GTFS_CACHE KV namespace not configured');
     return null;
   }
 
@@ -227,23 +263,17 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
     // Check if data exists in KV
     const cached = await globalEnv.GTFS_CACHE.get(GTFS_DATA_KEY, 'json');
     if (cached) {
-      console.log('GTFS data loaded from cache');
+      console.log('[Cache] GTFS data loaded from cache');
       return cached as GTFSFeed;
     }
 
-    // Lazy load: Use container to process GTFS data on first request
-    console.log('GTFS data not in cache, delegating to container for processing...');
+    // Lazy load: Process GTFS data on first request
+    console.log('[Cache] GTFS data not in cache, fetching and processing...');
     const feedUrl = globalEnv.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
     
-    const startTime = Date.now();
-    
-    // Delegate heavy processing to container
-    const feed = await processGTFSInContainer(feedUrl);
+    const feed = await fetchAndProcessGTFS(feedUrl);
 
-    const duration = Date.now() - startTime;
-    
-    console.log(`[Worker] Total processing time: ${duration}ms`);
-    console.log(`[Worker] Storing processed data in KV cache...`);
+    console.log('[Cache] Storing processed data in KV cache...');
 
     // Store in KV for future requests
     await globalEnv.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
@@ -258,24 +288,23 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
       tripCount: feed.trips.length,
       agencyCount: feed.agencies.length,
       triggeredBy: 'lazy-load',
-      processingTimeMs: duration,
-      processedBy: 'container',
+      processedBy: 'worker',
     };
     await globalEnv.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
       expirationTtl: CACHE_TTL * 7,
     });
 
-    console.log('[Worker] GTFS data cached successfully');
+    console.log('[Cache] GTFS data cached successfully');
     return feed;
   } catch (error) {
-    console.error('[Worker] Failed to fetch GTFS data:', error);
+    console.error('[Cache] Failed to fetch GTFS data:', error);
     
     // Provide helpful error messages
     if (error instanceof Error) {
-      if (error.message.includes('GTFS_PROCESSOR')) {
-        console.error('[Worker] Container binding error. Ensure GTFS_PROCESSOR is configured in wrangler.toml');
-      } else if (error.message.includes('timeout')) {
-        console.error('[Worker] Container processing timed out. The 186MB GTFS file may require more time to process.');
+      if (error.message.includes('timed out')) {
+        console.error('[Cache] Processing timed out. The GTFS file may be too large for Worker limits.');
+      } else if (error.message.includes('memory')) {
+        console.error('[Cache] Out of memory. Consider using a smaller GTFS feed or external processing.');
       }
     }
     
@@ -462,7 +491,6 @@ async function handleUtilityRequest(request: Request, env: Env, url: URL): Promi
   if (url.pathname === '/health') {
     let metadata = null;
     let kvConfigured = false;
-    let containerConfigured = !!env.GTFS_PROCESSOR;
 
     if (env.GTFS_CACHE) {
       kvConfigured = true;
@@ -479,12 +507,14 @@ async function handleUtilityRequest(request: Request, env: Env, url: URL): Promi
         environment: env.ENVIRONMENT || 'development',
         timestamp: new Date().toISOString(),
         kv_configured: kvConfigured,
-        container_configured: containerConfigured,
         gtfs_data_available: metadata !== null,
         gtfs_metadata: metadata,
-        architecture: {
-          worker: 'Handles API requests and KV caching',
-          container: 'Processes heavy 186MB GTFS files',
+        processing: {
+          mode: 'direct-worker',
+          max_download_size_mb: MAX_DOWNLOAD_SIZE / 1024 / 1024,
+          download_timeout_ms: DOWNLOAD_TIMEOUT_MS,
+          processing_timeout_ms: PROCESSING_TIMEOUT_MS,
+          max_retries: MAX_RETRIES,
         },
       }),
       {
@@ -509,9 +539,9 @@ async function handleUtilityRequest(request: Request, env: Env, url: URL): Promi
         transports: {
           streamable_http: '/mcp (recommended)',
         },
-        architecture: {
-          worker: 'Handles API requests and KV caching',
-          container: 'GTFS_PROCESSOR handles heavy GTFS file processing',
+        processing: {
+          mode: 'direct-worker',
+          description: 'GTFS processing happens directly in Worker with memory-efficient streaming',
         },
         documentation: 'https://github.com/laulauland/ov-mcp',
       }),
@@ -579,7 +609,7 @@ export default {
   },
 
   /**
-   * Scheduled handler for automatic GTFS data updates using container
+   * Scheduled handler for automatic GTFS data updates
    * Triggered by cron: every Sunday at 3am UTC
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -590,25 +620,19 @@ export default {
       return;
     }
 
-    if (!env.GTFS_PROCESSOR) {
-      console.error('[Scheduled] GTFS_PROCESSOR container not configured - skipping scheduled update');
-      return;
-    }
-
     try {
-      // Delegate GTFS processing to container
       const feedUrl = env.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
-      console.log('[Scheduled] Delegating GTFS processing to container:', feedUrl);
+      console.log('[Scheduled] Starting GTFS fetch and process:', feedUrl);
 
       const startTime = Date.now();
 
-      // Use container for heavy processing
-      const feed = await processGTFSInContainer(feedUrl);
+      // Fetch and process GTFS data
+      const feed = await fetchAndProcessGTFS(feedUrl);
 
       const duration = Date.now() - startTime;
       
-      console.log(`[Scheduled] Container processing complete in ${duration}ms`);
-      console.log(`[Scheduled] Received: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
+      console.log(`[Scheduled] Processing complete in ${duration}ms`);
+      console.log(`[Scheduled] Parsed: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
 
       // Store in KV
       console.log('[Scheduled] Storing processed data in KV cache...');
@@ -624,8 +648,8 @@ export default {
         tripCount: feed.trips.length,
         agencyCount: feed.agencies.length,
         triggeredBy: 'scheduled',
+        processedBy: 'worker',
         processingTimeMs: duration,
-        processedBy: 'container',
       };
       await env.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
         expirationTtl: CACHE_TTL * 7,
@@ -636,10 +660,10 @@ export default {
       console.error('[Scheduled] Failed to update GTFS data:', error);
       
       if (error instanceof Error) {
-        if (error.message.includes('GTFS_PROCESSOR')) {
-          console.error('[Scheduled] Container binding error. Ensure GTFS_PROCESSOR is configured in wrangler.toml');
-        } else if (error.message.includes('timeout')) {
-          console.error('[Scheduled] Container processing timed out. Consider increasing CONTAINER_TIMEOUT_MS.');
+        if (error.message.includes('timed out')) {
+          console.error('[Scheduled] Processing timed out. Consider optimizing GTFS parser or using external processing.');
+        } else if (error.message.includes('too large')) {
+          console.error('[Scheduled] File too large for Worker. Consider increasing MAX_DOWNLOAD_SIZE or using external processing.');
         }
       }
       
