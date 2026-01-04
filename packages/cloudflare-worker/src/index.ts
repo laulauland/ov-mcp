@@ -119,7 +119,7 @@ async function processGTFSInContainer(feedUrl: string): Promise<GTFSFeed> {
       },
       body: JSON.stringify({
         url: feedUrl,
-        operation: 'process',
+        operation: 'parse',
         options: {
           includeProgress: true,
         }
