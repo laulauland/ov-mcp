@@ -13,6 +13,7 @@ id = "f1f8a39a19554b9fa733b48a1cb136c9"
 ENVIRONMENT = "production"
 GTFS_FEED_URL = "http://gtfs.ovapi.nl/gtfs-nl.zip"
 REALTIME_FEED_URL = "http://gtfs.ovapi.nl/gtfsrt"
+CONTAINER_SERVICE_URL = "http://gtfs-processor:8080"
 
 # Scheduled triggers for automatic GTFS updates
 [triggers]
