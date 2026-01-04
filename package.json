@@ -3,8 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "workspaces": [
-    "packages/*",
-    "gtfs-container"
+    "packages/*"
   ],
   "scripts": {
     "build": "bun run build:gtfs && bun run build:worker",
