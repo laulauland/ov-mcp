@@ -9,12 +9,16 @@ binding = "GTFS_CACHE"
 id = "f1f8a39a19554b9fa733b48a1cb136c9"
 
 # Cloudflare Containers configuration
-[[container_bindings]]
-binding = "GTFS_PROCESSOR"
+[[containers]]
 name = "gtfs-processor-bun"
 image = "oven/bun:latest"
 command = ["bun", "run", "start"]
 instance_type = 'standard-3'
+
+[[durable_objects.bindings]]
+name = "GTFS_PROCESSOR"
+class_name = "gtfs-processor-bun"
+script_name = "ov-mcp"
 
 # Environment variables
 [vars]
