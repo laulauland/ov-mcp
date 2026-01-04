@@ -129,17 +129,20 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
 
     // Use streaming method with progress logging
     const feed = await GTFSDownloader.fetchAndParseStream(feedUrl, {
-      onProgress: (fileName: string, entriesProcessed: number) => {
+      onDownloadProgress: (loaded: number, total: number) => {
         const currentMemory = getEstimatedMemoryUsageMB();
-        console.log(`[Progress] Processing ${fileName}: ${entriesProcessed} entries (Memory: ${currentMemory.toFixed(2)} MB)`);
+        const percentComplete = total > 0 ? ((loaded / total) * 100).toFixed(1) : '0';
+        console.log(`[Progress] Downloading: ${(loaded / 1024 / 1024).toFixed(2)} MB / ${(total / 1024 / 1024).toFixed(2)} MB (${percentComplete}%) (Memory: ${currentMemory.toFixed(2)} MB)`);
         
         // Check memory limits
         if (currentMemory > MEMORY_LIMIT_WARNING_MB) {
           console.warn(`[Memory Warning] Usage exceeds ${MEMORY_LIMIT_WARNING_MB} MB: ${currentMemory.toFixed(2)} MB`);
         }
       },
-      onFileComplete: (fileName: string, totalEntries: number) => {
-        console.log(`[Progress] Completed ${fileName}: ${totalEntries} entries processed`);
+      onExtractionProgress: (filename: string, progress: number) => {
+        const currentMemory = getEstimatedMemoryUsageMB();
+        const percentComplete = (progress * 100).toFixed(1);
+        console.log(`[Progress] Extracting ${filename}: ${percentComplete}% complete (Memory: ${currentMemory.toFixed(2)} MB)`);
       }
     });
 
@@ -499,17 +502,20 @@ export default {
 
       // Use streaming method with progress logging
       const feed = await GTFSDownloader.fetchAndParseStream(feedUrl, {
-        onProgress: (fileName: string, entriesProcessed: number) => {
+        onDownloadProgress: (loaded: number, total: number) => {
           const currentMemory = getEstimatedMemoryUsageMB();
-          console.log(`[Scheduled][Progress] Processing ${fileName}: ${entriesProcessed} entries (Memory: ${currentMemory.toFixed(2)} MB)`);
+          const percentComplete = total > 0 ? ((loaded / total) * 100).toFixed(1) : '0';
+          console.log(`[Scheduled][Progress] Downloading: ${(loaded / 1024 / 1024).toFixed(2)} MB / ${(total / 1024 / 1024).toFixed(2)} MB (${percentComplete}%) (Memory: ${currentMemory.toFixed(2)} MB)`);
           
           // Check memory limits
           if (currentMemory > MEMORY_LIMIT_WARNING_MB) {
             console.warn(`[Scheduled][Memory Warning] Usage exceeds ${MEMORY_LIMIT_WARNING_MB} MB: ${currentMemory.toFixed(2)} MB`);
           }
         },
-        onFileComplete: (fileName: string, totalEntries: number) => {
-          console.log(`[Scheduled][Progress] Completed ${fileName}: ${totalEntries} entries processed`);
+        onExtractionProgress: (filename: string, progress: number) => {
+          const currentMemory = getEstimatedMemoryUsageMB();
+          const percentComplete = (progress * 100).toFixed(1);
+          console.log(`[Scheduled][Progress] Extracting ${filename}: ${percentComplete}% complete (Memory: ${currentMemory.toFixed(2)} MB)`);
         }
       });
 
