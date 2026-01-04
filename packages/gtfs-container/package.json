@@ -1,0 +1,21 @@
+{
+  "name": "@ov-mcp/gtfs-container",
+  "version": "0.1.0",
+  "description": "Bun-based GTFS processing container for OV-MCP",
+  "type": "module",
+  "main": "src/container-server.ts",
+  "scripts": {
+    "start": "bun run src/container-server.ts",
+    "dev": "bun --watch src/container-server.ts",
+    "health-check": "bun run src/health-check.ts"
+  },
+  "dependencies": {
+    "@types/bun": "latest"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
