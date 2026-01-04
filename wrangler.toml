@@ -22,28 +22,8 @@ crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 [observability]
 enabled = true
 
-# Cloudflare Containers (Beta) - GTFS Processor
+# Cloudflare Containers (Beta) - Simplified configuration
 [containers]
 name = "gtfs-processor"
 dockerfile = "./Dockerfile"
 entrypoint = ["/bin/gtfs-processor"]
-
-[containers.bindings]
-type = "durable_object"
-name = "GTFS_STATE"
-class_name = "GTFSState"
-
-# Durable Objects configuration
-[durable_objects]
-bindings = [
-  { name = "GTFS_STATE", class_name = "GTFSState", script_name = "ov-mcp" }
-]
-
-# Durable Objects migrations
-[[migrations]]
-tag = "v1"
-new_classes = ["GTFSState"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["GTFSState"]
