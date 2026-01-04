@@ -26,6 +26,8 @@ enabled = true
 [[containers]]
 class_name = "GTFSContainer"
 script_name = "ov-mcp"
+image = "./packages/gtfs-container/Dockerfile"
+instances = 3
 
 # Durable Objects bindings for Containers
 [[durable_objects.bindings]]
