@@ -7,10 +7,10 @@
  * Deploy with `wrangler deploy` to test
  * 
  * ARCHITECTURE:
- * - Worker: Lightweight proxy handling API requests, delegates to container service
- * - Container Service: 8GB service that handles all GTFS processing and caching
- * - KV Storage: Managed entirely by the container service
- * - All memory-intensive operations (download, parse, cache) happen in the container
+ * - Worker: Lightweight proxy handling API requests, delegates to Durable Object
+ * - Durable Object: Handles all GTFS processing and caching
+ * - KV Storage: Managed entirely by the Durable Object
+ * - All memory-intensive operations (download, parse, cache) happen in the DO
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -19,18 +19,18 @@ import { z } from "zod";
 
 import { GTFSFeed, GTFSStop, GTFSRoute } from '@ov-mcp/gtfs-parser';
 
-// Container service configuration
+// Container timeout configuration
 const CONTAINER_TIMEOUT_MS = 180000; // 3 minutes for container operations
 
 // Environment interface for Cloudflare Worker
 export interface Env {
-  GTFS_CONTAINER: Fetcher; // Cloudflare Container Service binding
+  GTFS_CONTAINER: DurableObjectNamespace; // Durable Object namespace binding
   ENVIRONMENT?: string;
 }
 
 /**
- * Container interface - now represents HTTP service calls
- * This provides a clean abstraction for accessing the remote GTFS container service
+ * Container interface - now represents Durable Object calls
+ * This provides a clean abstraction for accessing the GTFS Durable Object
  */
 interface IGTFSContainer {
   getGTFSData(): Promise<GTFSFeed | null>;
@@ -39,37 +39,40 @@ interface IGTFSContainer {
 }
 
 /**
- * Container client using Cloudflare Service Binding
- * All GTFS processing happens in the 8GB container service
- * Uses proper Worker-to-Container communication via service binding
+ * Container client using Durable Object pattern
+ * All GTFS processing happens in the Durable Object
+ * Uses proper Worker-to-DO communication via namespace.get(id).fetch()
  */
 class GTFSContainerClient implements IGTFSContainer {
-  private container: Fetcher;
+  private namespace: DurableObjectNamespace;
+  private objectId: DurableObjectId;
 
-  constructor(container: Fetcher) {
-    this.container = container;
+  constructor(namespace: DurableObjectNamespace, objectId: DurableObjectId) {
+    this.namespace = namespace;
+    this.objectId = objectId;
   }
 
   /**
-   * Make request to container service with timeout and error handling
-   * Uses container.fetch() for direct Worker-to-Container communication
+   * Make request to Durable Object with timeout and error handling
+   * Uses namespace.get(id).fetch() for proper Worker-to-DO communication
    */
   private async callContainer<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    // Container bindings use relative URLs
-    const url = `http://container${endpoint}`;
+    // Create request with full URL (required for DO fetch)
+    const url = `https://dummy-host${endpoint}`;
     
-    console.log(`[Container Client] Calling container service: ${endpoint}`);
+    console.log(`[Container Client] Calling Durable Object: ${endpoint}`);
     const startTime = Date.now();
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), CONTAINER_TIMEOUT_MS);
 
-      // Use container binding's fetch method for Worker-to-Container communication
-      const response = await this.container.fetch(url, {
+      // Use Durable Object pattern: get stub and fetch
+      const stub = this.namespace.get(this.objectId);
+      const response = await stub.fetch(url, {
         ...options,
         signal: controller.signal,
         headers: {
@@ -85,7 +88,7 @@ class GTFSContainerClient implements IGTFSContainer {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Container service error (${response.status}): ${errorText}`);
+        throw new Error(`Durable Object error (${response.status}): ${errorText}`);
       }
 
       const data = await response.json() as T;
@@ -95,7 +98,7 @@ class GTFSContainerClient implements IGTFSContainer {
       console.error(`[Container Client] Error after ${duration}ms:`, error);
 
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Container service timeout after ${CONTAINER_TIMEOUT_MS}ms`);
+        throw new Error(`Durable Object timeout after ${CONTAINER_TIMEOUT_MS}ms`);
       }
 
       throw error;
@@ -103,8 +106,8 @@ class GTFSContainerClient implements IGTFSContainer {
   }
 
   /**
-   * Get GTFS data from container service
-   * Container handles all caching and lazy loading
+   * Get GTFS data from Durable Object
+   * DO handles all caching and lazy loading
    */
   async getGTFSData(): Promise<GTFSFeed | null> {
     try {
@@ -117,8 +120,8 @@ class GTFSContainerClient implements IGTFSContainer {
   }
 
   /**
-   * Trigger GTFS data update in container service
-   * Container handles download, processing, and storage
+   * Trigger GTFS data update in Durable Object
+   * DO handles download, processing, and storage
    */
   async updateGTFSData(): Promise<{ success: boolean; metadata?: any; error?: string }> {
     try {
@@ -140,7 +143,7 @@ class GTFSContainerClient implements IGTFSContainer {
   }
 
   /**
-   * Get metadata from container service
+   * Get metadata from Durable Object
    */
   async getMetadata(): Promise<any | null> {
     try {
@@ -228,13 +231,16 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 /**
- * Get container client - creates client using the service binding
+ * Get container client - creates client using the Durable Object namespace
  */
 function getContainer(env: Env): IGTFSContainer {
   if (!env.GTFS_CONTAINER) {
-    throw new Error('GTFS_CONTAINER binding not configured');
+    throw new Error('GTFS_CONTAINER namespace binding not configured');
   }
-  return new GTFSContainerClient(env.GTFS_CONTAINER);
+  
+  // Use a fixed ID for the singleton Durable Object
+  const id = env.GTFS_CONTAINER.idFromName('gtfs-container');
+  return new GTFSContainerClient(env.GTFS_CONTAINER, id);
 }
 
 /**
@@ -259,7 +265,7 @@ function createServer(container: IGTFSContainer): McpServer {
 
       if (!feed) {
         return {
-          content: [{ type: "text", text: "GTFS data not available. The container service may be initializing or experiencing issues." }],
+          content: [{ type: "text", text: "GTFS data not available. The Durable Object may be initializing or experiencing issues." }],
         };
       }
 
@@ -423,14 +429,14 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
         environment: env.ENVIRONMENT || 'development',
         timestamp: new Date().toISOString(),
         container_configured: containerConfigured,
-        container_binding: 'GTFS_CONTAINER (Service Binding)',
+        container_binding: 'GTFS_CONTAINER (Durable Object Namespace)',
         gtfs_data_available: metadata !== null,
         gtfs_metadata: metadata,
         architecture: {
-          mode: 'cloudflare-service-binding',
+          mode: 'cloudflare-durable-object',
           worker_role: 'lightweight-proxy',
-          container_role: '8GB-service-handles-all-processing',
-          description: 'Worker delegates all GTFS operations to container service via Cloudflare Service Binding',
+          container_role: 'durable-object-handles-all-processing',
+          description: 'Worker delegates all GTFS operations to Durable Object via namespace.get(id).fetch()',
         },
       }),
       {
@@ -456,10 +462,10 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
           streamable_http: '/mcp (recommended)',
         },
         architecture: {
-          mode: 'cloudflare-service-binding',
+          mode: 'cloudflare-durable-object',
           worker_role: 'lightweight-proxy',
-          container_role: '8GB-service-handles-all-processing',
-          description: 'All GTFS download, parsing, and caching happens in the container service. Worker is a lightweight proxy using Cloudflare Service Binding.',
+          container_role: 'durable-object-handles-all-processing',
+          description: 'All GTFS download, parsing, and caching happens in the Durable Object. Worker is a lightweight proxy using proper DO pattern.',
         },
         documentation: 'https://github.com/laulauland/ov-mcp',
       }),
@@ -471,19 +477,19 @@ async function handleUtilityRequest(request: Request, container: IGTFSContainer,
 }
 
 /**
- * Main Worker export using Cloudflare Service Binding pattern
+ * Main Worker export using Durable Object pattern
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Validate container service binding
+    // Validate Durable Object namespace binding
     if (!env.GTFS_CONTAINER) {
-      console.error('[Worker] GTFS_CONTAINER binding not configured');
+      console.error('[Worker] GTFS_CONTAINER namespace binding not configured');
       return new Response(
         JSON.stringify({
-          error: 'Container service not configured',
-          message: 'GTFS_CONTAINER service binding is required. Please configure it in wrangler.toml',
+          error: 'Durable Object not configured',
+          message: 'GTFS_CONTAINER namespace binding is required. Please configure it in wrangler.toml',
         }),
         {
           status: 500,
@@ -559,13 +565,13 @@ export default {
   /**
    * Scheduled handler for automatic GTFS data updates
    * Triggered by cron: every Sunday at 3am UTC
-   * Delegates to container service which handles all processing
+   * Delegates to Durable Object which handles all processing
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('[Scheduled] GTFS update triggered at:', new Date(event.scheduledTime).toISOString());
 
     if (!env.GTFS_CONTAINER) {
-      console.error('[Scheduled] GTFS_CONTAINER binding not configured - skipping scheduled update');
+      console.error('[Scheduled] GTFS_CONTAINER namespace binding not configured - skipping scheduled update');
       return;
     }
 
@@ -573,17 +579,17 @@ export default {
     const container = getContainer(env);
 
     try {
-      console.log('[Scheduled] Calling container service to update GTFS data...');
+      console.log('[Scheduled] Calling Durable Object to update GTFS data...');
       const result = await container.updateGTFSData();
       
       if (result.success) {
-        console.log('[Scheduled] GTFS data updated successfully by container service:', result.metadata);
+        console.log('[Scheduled] GTFS data updated successfully by Durable Object:', result.metadata);
       } else {
-        console.error('[Scheduled] Container service failed to update GTFS data:', result.error);
+        console.error('[Scheduled] Durable Object failed to update GTFS data:', result.error);
         throw new Error(result.error);
       }
     } catch (error) {
-      console.error('[Scheduled] Unexpected error during container service call:', error);
+      console.error('[Scheduled] Unexpected error during Durable Object call:', error);
       throw error; // Re-throw to mark the scheduled event as failed
     }
   },
