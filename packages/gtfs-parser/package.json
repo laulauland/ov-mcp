@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "papaparse": "^5.4.1",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "@zip.js/zip.js": "^2.7.52",
+    "jszip": "^3.10.1"
   },
   "devDependencies": {
     "@types/bun": "latest",
