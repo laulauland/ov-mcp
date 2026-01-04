@@ -38,4 +38,4 @@ script_name = "ov-mcp"
 # Migrations for Container with SQLite
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["GTFSContainer"]
+newsqliteclasses = ["GTFSContainer"]
