@@ -15,7 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 
-import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, parseGTFS } from '@ov-mcp/gtfs-parser';
+import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, GTFSDownloader } from '@ov-mcp/gtfs-parser';
 
 // Cache configuration
 const CACHE_TTL = 60 * 60 * 24; // 24 hours in seconds
@@ -185,8 +185,9 @@ async function processGTFSData(buffer: ArrayBuffer): Promise<GTFSFeed> {
   const startTime = Date.now();
 
   try {
-    // Use parseGTFS from gtfs-parser package with timeout wrapper
-    const processingPromise = parseGTFS(buffer);
+    // Use GTFSDownloader.fetchAndParseStream from gtfs-parser package with timeout wrapper
+    const downloader = new GTFSDownloader();
+    const processingPromise = downloader.fetchAndParseStream(buffer);
     
     // Create timeout promise
     const timeoutPromise = new Promise<never>((_, reject) => {
