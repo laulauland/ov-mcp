@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@cloudflare/containers": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.23.0",
     "@ov-mcp/gtfs-parser": "workspace:*",
     "agents": "^0.3.3",
