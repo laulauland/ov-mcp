@@ -22,14 +22,18 @@ enum CompressionMethod {
 }
 
 /**
- * GTFS Data Downloader with Streaming Support
+ * GTFS Data Downloader with Multi-Library Fallback System
+ * 
  * Downloads and parses GTFS data using streaming APIs - browser/edge runtime compatible
  * Memory-efficient processing for large GTFS datasets
  * 
- * Features robust ZIP decompression with:
- * - Explicit DEFLATE support via fflate
- * - Fallback to Web Streams API DecompressionStream
- * - Comprehensive compression type validation
+ * Features a robust three-tier ZIP decompression fallback system:
+ * 1. **Primary: fflate** - Fast, lightweight, streaming-capable
+ * 2. **Secondary: @zip.js/zip.js** - Comprehensive compression support, handles edge cases
+ * 3. **Tertiary: jszip** - Battle-tested, wide compatibility
+ * 
+ * This multi-library approach ensures robust handling of any ZIP compression scenario,
+ * including DEFLATE, DEFLATE64, STORE, and other compression methods.
  */
 export class GTFSDownloader {
   private static readonly DEFAULT_GTFS_URL = 'http://gtfs.ovapi.nl/gtfs-nl.zip';
@@ -77,49 +81,223 @@ export class GTFSDownloader {
   }
 
   /**
-   * Extract and parse GTFS data from a stream using robust decompression
+   * Extract and parse GTFS data from a stream using multi-library fallback
    * 
-   * Implements a hybrid approach:
-   * 1. Primary: fflate with explicit DEFLATE support
-   * 2. Fallback: Web Streams API DecompressionStream (if available)
+   * Implements a three-tier fallback approach:
+   * 1. **fflate**: Fast, streaming-capable, good for standard DEFLATE
+   * 2. **@zip.js/zip.js**: Robust compression support, handles complex ZIPs
+   * 3. **jszip**: Battle-tested, maximum compatibility
    * 
-   * Memory-efficient: processes files as they're decompressed
+   * Memory-efficient: processes files as they're decompressed (where possible)
    */
   static async extractStream(
     stream: ReadableStream<Uint8Array>,
     callbacks?: ProgressCallback
   ): Promise<GTFSFeed> {
-    console.log('Starting streaming extraction with robust DEFLATE support...');
+    console.log('🔧 Starting ZIP extraction with multi-library fallback system...');
 
+    // Read stream into buffer (needed for all ZIP libraries)
+    const zipData = await this.streamToBuffer(stream);
+    console.log(`📦 Loaded ${(zipData.length / 1024 / 1024).toFixed(2)} MB ZIP data`);
+
+    const errors: Array<{library: string, error: Error}> = [];
+
+    // ==================== TIER 1: fflate ====================
     try {
-      // Try primary method: fflate with explicit compression type registration
-      return await this.extractStreamWithFflate(stream, callbacks);
+      console.log('📚 [Tier 1] Attempting extraction with fflate (fast & lightweight)...');
+      const result = await this.extractWithFflate(zipData, callbacks);
+      console.log('✅ [Tier 1] Successfully extracted with fflate!');
+      return result;
     } catch (error) {
-      console.warn('fflate extraction failed, attempting fallback method:', error);
-      
-      // If fflate fails, try Web Streams API fallback
-      if (this.isDecompressionStreamSupported()) {
-        console.log('Attempting Web Streams API DecompressionStream fallback...');
-        return await this.extractStreamWithWebStreams(stream, callbacks);
-      }
-      
-      // If both fail, throw the original error
-      throw error;
+      const err = error as Error;
+      console.warn(`⚠️  [Tier 1] fflate extraction failed: ${err.message}`);
+      errors.push({library: 'fflate', error: err});
     }
+
+    // ==================== TIER 2: @zip.js/zip.js ====================
+    try {
+      console.log('📚 [Tier 2] Attempting extraction with @zip.js/zip.js (robust compression support)...');
+      const result = await this.extractWithZipJs(zipData, callbacks);
+      console.log('✅ [Tier 2] Successfully extracted with @zip.js/zip.js!');
+      return result;
+    } catch (error) {
+      const err = error as Error;
+      console.warn(`⚠️  [Tier 2] @zip.js/zip.js extraction failed: ${err.message}`);
+      errors.push({library: '@zip.js/zip.js', error: err});
+    }
+
+    // ==================== TIER 3: jszip ====================
+    try {
+      console.log('📚 [Tier 3] Attempting extraction with jszip (maximum compatibility)...');
+      const result = await this.extractWithJSZip(zipData, callbacks);
+      console.log('✅ [Tier 3] Successfully extracted with jszip!');
+      return result;
+    } catch (error) {
+      const err = error as Error;
+      console.warn(`⚠️  [Tier 3] jszip extraction failed: ${err.message}`);
+      errors.push({library: 'jszip', error: err});
+    }
+
+    // ==================== ALL METHODS FAILED ====================
+    console.error('❌ All ZIP extraction methods failed!');
+    console.error('Error summary:');
+    errors.forEach(({library, error}) => {
+      console.error(`  - ${library}: ${error.message}`);
+    });
+
+    throw new Error(
+      `Failed to extract ZIP with all available libraries (fflate, @zip.js/zip.js, jszip). ` +
+      `Errors: ${errors.map(e => `${e.library}: ${e.error.message}`).join('; ')}`
+    );
   }
 
+  // ==================== TIER 1: fflate Implementation ====================
+  
   /**
-   * Extract using fflate with explicit DEFLATE support
-   * Registers all necessary compression decoders
+   * Extract using fflate - fast, lightweight, streaming-capable
+   * Best for standard DEFLATE compressed ZIPs
    */
-  private static async extractStreamWithFflate(
-    stream: ReadableStream<Uint8Array>,
+  private static async extractWithFflate(
+    zipData: Uint8Array,
     callbacks?: ProgressCallback
   ): Promise<GTFSFeed> {
-    console.log('Using fflate decompression with explicit DEFLATE registration...');
+    console.log('  🔍 Using fflate with explicit DEFLATE registration...');
 
     return new Promise((resolve, reject) => {
-      // Track file buffers as they're being built
+      try {
+        // Track file buffers as they're being built
+        const fileBuffers: Map<string, Uint8Array[]> = new Map();
+        const requiredFiles = [
+          'agency.txt',
+          'stops.txt',
+          'routes.txt',
+          'trips.txt',
+          'stop_times.txt',
+          'calendar.txt',
+        ];
+
+        let filesProcessed = 0;
+        let hasEncounteredFiles = false;
+
+        // Create streaming unzip instance with comprehensive compression support
+        const unzip = new Unzip((file) => {
+          const filename = file.name;
+          const compressionType = file.compression;
+          
+          hasEncounteredFiles = true;
+          
+          console.log(`    📄 File: ${filename} (compression: ${compressionType})`);
+          
+          // Validate compression type
+          if (!this.SUPPORTED_COMPRESSION.includes(compressionType)) {
+            const error = new Error(
+              `Unsupported compression type ${compressionType} for file ${filename}. ` +
+              `fflate supports: ${this.SUPPORTED_COMPRESSION.join(', ')}`
+            );
+            reject(error);
+            return;
+          }
+          
+          // Only process required GTFS files
+          if (!requiredFiles.includes(filename)) {
+            console.log(`    ⏭️  Skipping: ${filename}`);
+            return;
+          }
+
+          console.log(`    ✓ Processing: ${filename}`);
+          
+          // Initialize buffer for this file
+          fileBuffers.set(filename, []);
+          
+          // Set up streaming decompression for this file
+          file.ondata = (err, data, final) => {
+            if (err) {
+              console.error(`    ❌ Error decompressing ${filename}:`, err);
+              reject(new Error(`fflate failed to decompress ${filename}: ${err.message}`));
+              return;
+            }
+
+            // Accumulate chunks for this file
+            const chunks = fileBuffers.get(filename)!;
+            chunks.push(data);
+
+            if (callbacks?.onExtractionProgress) {
+              filesProcessed = final ? filesProcessed + 1 : filesProcessed;
+              const progress = filesProcessed / requiredFiles.length;
+              callbacks.onExtractionProgress(filename, progress);
+            }
+
+            if (final) {
+              const totalSize = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+              console.log(`    ✅ Completed: ${filename} (${(totalSize / 1024).toFixed(1)} KB)`);
+            }
+          };
+
+          // Start decompression for this file
+          file.start();
+        });
+
+        // Register DEFLATE decompressors
+        unzip.register(AsyncUnzipInflate);
+        unzip.register(UnzipInflate);
+        
+        console.log('  🔧 Registered: AsyncUnzipInflate, UnzipInflate');
+
+        // Push data to unzip
+        unzip.push(zipData, true);
+
+        // Wait for async operations to complete
+        setTimeout(() => {
+          try {
+            // Validate that we found files
+            if (!hasEncounteredFiles) {
+              throw new Error('No files found in ZIP archive');
+            }
+
+            // Check for required files
+            const missingFiles = requiredFiles.filter(f => !fileBuffers.has(f));
+            if (missingFiles.length > 0) {
+              console.warn(`  ⚠️  Missing files: ${missingFiles.join(', ')}`);
+            }
+
+            // Process files and resolve
+            const feed = this.processParsedFiles(fileBuffers);
+            resolve(feed);
+          } catch (error) {
+            reject(error);
+          }
+        }, 200);
+
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  // ==================== TIER 2: @zip.js/zip.js Implementation ====================
+  
+  /**
+   * Extract using @zip.js/zip.js - robust, handles complex compression
+   * Excellent for DEFLATE, DEFLATE64, and other compression methods
+   */
+  private static async extractWithZipJs(
+    zipData: Uint8Array,
+    callbacks?: ProgressCallback
+  ): Promise<GTFSFeed> {
+    console.log('  🔍 Using @zip.js/zip.js for robust compression handling...');
+
+    try {
+      // Dynamically import @zip.js/zip.js
+      const { ZipReader, BlobReader, BlobWriter, TextWriter } = await import('@zip.js/zip.js');
+
+      // Create a Blob from the zip data
+      const zipBlob = new Blob([zipData]);
+      const zipReader = new ZipReader(new BlobReader(zipBlob));
+
+      // Get all entries
+      const entries = await zipReader.getEntries();
+      console.log(`  📋 Found ${entries.length} entries in ZIP`);
+
       const fileBuffers: Map<string, Uint8Array[]> = new Map();
       const requiredFiles = [
         'agency.txt',
@@ -131,148 +309,144 @@ export class GTFSDownloader {
       ];
 
       let filesProcessed = 0;
-      let hasEncounteredFiles = false;
 
-      // Create streaming unzip instance with comprehensive compression support
-      const unzip = new Unzip((file) => {
-        const filename = file.name;
-        const compressionType = file.compression;
+      // Process each entry
+      for (const entry of entries) {
+        const filename = entry.filename;
         
-        hasEncounteredFiles = true;
-        
-        console.log(`Discovered file: ${filename} (compression type: ${compressionType})`);
-        
-        // Validate compression type
-        if (!this.SUPPORTED_COMPRESSION.includes(compressionType)) {
-          const error = new Error(
-            `Unsupported compression type ${compressionType} for file ${filename}. ` +
-            `Supported types: ${this.SUPPORTED_COMPRESSION.join(', ')} ` +
-            `(STORE=${CompressionMethod.STORE}, DEFLATE=${CompressionMethod.DEFLATE})`
-          );
-          console.error(error.message);
-          reject(error);
-          return;
+        // Skip directories
+        if (entry.directory) {
+          continue;
         }
-        
+
+        console.log(`    📄 File: ${filename} (${(entry.compressedSize / 1024).toFixed(1)} KB compressed)`);
+
         // Only process required GTFS files
         if (!requiredFiles.includes(filename)) {
-          console.log(`Skipping non-required file: ${filename}`);
-          return;
+          console.log(`    ⏭️  Skipping: ${filename}`);
+          continue;
         }
 
-        console.log(`Processing required file: ${filename}`);
-        
-        // Initialize buffer for this file
-        fileBuffers.set(filename, []);
-        
-        // Set up streaming decompression for this file
-        file.ondata = (err, data, final) => {
-          if (err) {
-            console.error(`Error decompressing ${filename}:`, err);
-            console.error(`Compression type was: ${compressionType}`);
-            reject(new Error(`Failed to decompress ${filename}: ${err.message}`));
-            return;
-          }
+        console.log(`    ✓ Processing: ${filename}`);
 
-          // Accumulate chunks for this file
-          const chunks = fileBuffers.get(filename)!;
-          chunks.push(data);
+        // Extract file data as Uint8Array
+        const blobWriter = new BlobWriter();
+        const blob = await entry.getData!(blobWriter);
+        const arrayBuffer = await blob.arrayBuffer();
+        const data = new Uint8Array(arrayBuffer);
 
-          if (callbacks?.onExtractionProgress) {
-            filesProcessed = final ? filesProcessed + 1 : filesProcessed;
-            const progress = filesProcessed / requiredFiles.length;
-            callbacks.onExtractionProgress(filename, progress);
-          }
+        fileBuffers.set(filename, [data]);
 
-          // Log completion
-          if (final) {
-            const totalSize = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-            console.log(`Completed: ${filename} (${totalSize} bytes decompressed)`);
-          }
-        };
-
-        // Start decompression for this file
-        file.start();
-      });
-
-      // ===== CRITICAL: Register ALL compression decoders explicitly =====
-      // This ensures DEFLATE (type 8) is definitely supported
-      
-      // Register DEFLATE decompressor (compression type 8) - async version
-      unzip.register(AsyncUnzipInflate);
-      
-      // Also register synchronous DEFLATE as backup
-      // Some implementations may prefer sync over async
-      unzip.register(UnzipInflate);
-      
-      console.log('Registered compression decoders: DEFLATE (async & sync)');
-
-      // Process the stream
-      const reader = stream.getReader();
-      
-      const processChunks = async () => {
-        try {
-          let chunkCount = 0;
-          
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              console.log(`Processed ${chunkCount} chunks from stream`);
-              break;
-            }
-
-            chunkCount++;
-            
-            // Push chunk to unzip for processing
-            unzip.push(value);
-          }
-
-          // Finalize the unzip process
-          console.log('Finalizing ZIP extraction...');
-          unzip.push(new Uint8Array(0), true);
-
-          // Wait for all async decompression operations to complete
-          // Increased timeout to ensure all data is processed
-          await new Promise(r => setTimeout(r, 200));
-
-          // Validate that we found files
-          if (!hasEncounteredFiles) {
-            throw new Error('No files found in ZIP archive - archive may be corrupted');
-          }
-
-          // Validate that we got the required files
-          const missingFiles = requiredFiles.filter(f => !fileBuffers.has(f));
-          if (missingFiles.length > 0) {
-            console.warn(`Warning: Missing optional files: ${missingFiles.join(', ')}`);
-          }
-
-          // Now process all accumulated file data
-          console.log(`Processing ${fileBuffers.size} extracted files...`);
-          const feed = this.processParsedFiles(fileBuffers);
-          resolve(feed);
-
-        } catch (error) {
-          console.error('Error during chunk processing:', error);
-          reject(error);
+        filesProcessed++;
+        if (callbacks?.onExtractionProgress) {
+          callbacks.onExtractionProgress(filename, filesProcessed / requiredFiles.length);
         }
-      };
 
-      processChunks();
-    });
+        console.log(`    ✅ Completed: ${filename} (${(data.length / 1024).toFixed(1)} KB)`);
+      }
+
+      // Close the reader
+      await zipReader.close();
+
+      // Check for required files
+      const missingFiles = requiredFiles.filter(f => !fileBuffers.has(f));
+      if (missingFiles.length > 0) {
+        console.warn(`  ⚠️  Missing files: ${missingFiles.join(', ')}`);
+      }
+
+      // Process files
+      const feed = this.processParsedFiles(fileBuffers);
+      return feed;
+
+    } catch (error) {
+      const err = error as Error;
+      throw new Error(`@zip.js/zip.js extraction failed: ${err.message}`);
+    }
   }
 
+  // ==================== TIER 3: jszip Implementation ====================
+  
   /**
-   * Fallback extraction using Web Streams API DecompressionStream
-   * Used if fflate fails or for additional reliability
+   * Extract using jszip - battle-tested, maximum compatibility
+   * Fallback for when other methods fail
    */
-  private static async extractStreamWithWebStreams(
-    stream: ReadableStream<Uint8Array>,
+  private static async extractWithJSZip(
+    zipData: Uint8Array,
     callbacks?: ProgressCallback
   ): Promise<GTFSFeed> {
-    console.log('Using Web Streams API DecompressionStream fallback...');
+    console.log('  🔍 Using jszip for maximum compatibility...');
 
-    // Read entire stream into buffer first (needed for ZIP parsing)
+    try {
+      // Dynamically import jszip
+      const JSZip = (await import('jszip')).default;
+
+      // Load the ZIP
+      const zip = await JSZip.loadAsync(zipData);
+      console.log(`  📋 Loaded ZIP with ${Object.keys(zip.files).length} files`);
+
+      const fileBuffers: Map<string, Uint8Array[]> = new Map();
+      const requiredFiles = [
+        'agency.txt',
+        'stops.txt',
+        'routes.txt',
+        'trips.txt',
+        'stop_times.txt',
+        'calendar.txt',
+      ];
+
+      let filesProcessed = 0;
+
+      // Process each file
+      for (const [filename, zipEntry] of Object.entries(zip.files)) {
+        // Skip directories
+        if (zipEntry.dir) {
+          continue;
+        }
+
+        console.log(`    📄 File: ${filename}`);
+
+        // Only process required GTFS files
+        if (!requiredFiles.includes(filename)) {
+          console.log(`    ⏭️  Skipping: ${filename}`);
+          continue;
+        }
+
+        console.log(`    ✓ Processing: ${filename}`);
+
+        // Extract file data as Uint8Array
+        const data = await zipEntry.async('uint8array');
+        fileBuffers.set(filename, [data]);
+
+        filesProcessed++;
+        if (callbacks?.onExtractionProgress) {
+          callbacks.onExtractionProgress(filename, filesProcessed / requiredFiles.length);
+        }
+
+        console.log(`    ✅ Completed: ${filename} (${(data.length / 1024).toFixed(1)} KB)`);
+      }
+
+      // Check for required files
+      const missingFiles = requiredFiles.filter(f => !fileBuffers.has(f));
+      if (missingFiles.length > 0) {
+        console.warn(`  ⚠️  Missing files: ${missingFiles.join(', ')}`);
+      }
+
+      // Process files
+      const feed = this.processParsedFiles(fileBuffers);
+      return feed;
+
+    } catch (error) {
+      const err = error as Error;
+      throw new Error(`jszip extraction failed: ${err.message}`);
+    }
+  }
+
+  // ==================== Helper Methods ====================
+
+  /**
+   * Convert a ReadableStream to a Uint8Array buffer
+   */
+  private static async streamToBuffer(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
     const reader = stream.getReader();
     const chunks: Uint8Array[] = [];
     
@@ -282,100 +456,23 @@ export class GTFSDownloader {
       chunks.push(value);
     }
 
-    // Combine chunks
+    // Combine chunks efficiently
     const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const zipData = new Uint8Array(totalLength);
+    const buffer = new Uint8Array(totalLength);
     let offset = 0;
     for (const chunk of chunks) {
-      zipData.set(chunk, offset);
+      buffer.set(chunk, offset);
       offset += chunk.length;
     }
 
-    console.log(`Loaded ${zipData.length} bytes for Web Streams decompression`);
-
-    // Use synchronous unzip with Web Streams for individual file decompression
-    const unzipped = UnzipSync(zipData);
-    const fileBuffers: Map<string, Uint8Array[]> = new Map();
-    
-    const requiredFiles = [
-      'agency.txt',
-      'stops.txt',
-      'routes.txt',
-      'trips.txt',
-      'stop_times.txt',
-      'calendar.txt',
-    ];
-
-    for (const [filename, compressedData] of Object.entries(unzipped)) {
-      if (!requiredFiles.includes(filename)) {
-        continue;
-      }
-
-      console.log(`Decompressing ${filename} with Web Streams...`);
-      
-      // Use DecompressionStream for DEFLATE
-      const decompressed = await this.decompressWithWebStreams(compressedData);
-      fileBuffers.set(filename, [decompressed]);
-
-      if (callbacks?.onExtractionProgress) {
-        callbacks.onExtractionProgress(filename, fileBuffers.size / requiredFiles.length);
-      }
-    }
-
-    return this.processParsedFiles(fileBuffers);
-  }
-
-  /**
-   * Decompress data using Web Streams API DecompressionStream
-   */
-  private static async decompressWithWebStreams(data: Uint8Array): Promise<Uint8Array> {
-    // Create a readable stream from the data
-    const inputStream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(data);
-        controller.close();
-      },
-    });
-
-    // Decompress using 'deflate' format
-    const decompressedStream = inputStream.pipeThrough(
-      new DecompressionStream('deflate')
-    );
-
-    // Read decompressed data
-    const reader = decompressedStream.getReader();
-    const chunks: Uint8Array[] = [];
-    
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-    }
-
-    // Combine chunks
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return result;
-  }
-
-  /**
-   * Check if DecompressionStream is supported in the current environment
-   */
-  private static isDecompressionStreamSupported(): boolean {
-    return typeof DecompressionStream !== 'undefined';
+    return buffer;
   }
 
   /**
    * Process accumulated file buffers into a GTFS feed
    */
   private static processParsedFiles(fileBuffers: Map<string, Uint8Array[]>): GTFSFeed {
-    console.log('Parsing GTFS files...');
+    console.log('🔄 Parsing GTFS files...');
 
     const decode = (chunks: Uint8Array[] | undefined): string => {
       if (!chunks || chunks.length === 0) return '';
@@ -447,7 +544,7 @@ export class GTFSDownloader {
     return this.extractStream(stream, callbacks);
   }
 
-  // ===== Legacy non-streaming methods (kept for backwards compatibility) =====
+  // ==================== Legacy Methods (Backwards Compatibility) ====================
 
   /**
    * @deprecated Use downloadStream() for better memory efficiency
@@ -486,15 +583,6 @@ export class GTFSDownloader {
     });
 
     // Note: This still loads into memory but uses the streaming parser
-    return this.extractStreamSync(stream);
-  }
-
-  /**
-   * Synchronous wrapper for extractStream (used by legacy extract method)
-   */
-  private static extractStreamSync(stream: ReadableStream<Uint8Array>): GTFSFeed {
-    // This is a compromise - we can't make the legacy method async
-    // In practice, callers should migrate to the async streaming methods
     throw new Error('Legacy extract() is no longer supported. Use extractStream() or fetchAndParseStream() instead.');
   }
 
@@ -505,7 +593,7 @@ export class GTFSDownloader {
   static async fetchAndParse(url?: string): Promise<GTFSFeed> {
     console.log('⚠️  Using legacy fetchAndParse method. Consider using fetchAndParseStream() for better memory efficiency.');
     
-    // Redirect to streaming version
+    // Redirect to streaming version with multi-library fallback
     return this.fetchAndParseStream(url);
   }
 }
