@@ -185,8 +185,16 @@ async function processGTFSData(buffer: ArrayBuffer): Promise<GTFSFeed> {
   const startTime = Date.now();
 
   try {
-    // Use GTFSDownloader.fetchAndParseStream from gtfs-parser package with timeout wrapper
-    const processingPromise = GTFSDownloader.fetchAndParseStream(buffer);
+    // Convert ArrayBuffer to ReadableStream for GTFSDownloader.extractStream
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(buffer));
+        controller.close();
+      }
+    });
+
+    // Use GTFSDownloader.extractStream with the ReadableStream
+    const processingPromise = GTFSDownloader.extractStream(stream);
     
     // Create timeout promise
     const timeoutPromise = new Promise<never>((_, reject) => {
