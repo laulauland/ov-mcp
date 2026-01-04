@@ -25,10 +25,10 @@ enabled = true
 # Service bindings for Container communication
 [[services]]
 binding = "GTFS_CONTAINER"
-service = "gtfs-processor"
+service = "GTFS_CONTAINER"
 
 # Cloudflare Containers configuration
 [[containers]]
-name = "gtfs-processor"
+name = "GTFS_CONTAINER"
 image = "./packages/gtfs-container/Dockerfile"
 max_instances = 5
