@@ -8,11 +8,6 @@ compatibility_flags = ["nodejs_compat"]
 binding = "GTFS_CACHE"
 id = "f1f8a39a19554b9fa733b48a1cb136c9"
 
-# Service bindings to connect Worker to Container
-[[services]]
-binding = "GTFS_CONTAINER"
-service = "gtfs-processor"
-
 # Environment variables
 [vars]
 ENVIRONMENT = "production"
@@ -27,8 +22,18 @@ crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 [observability]
 enabled = true
 
-# Cloudflare Containers (Beta) - Simplified configuration
-[containers]
-name = "gtfs-processor"
-dockerfile = "./Dockerfile"
-entrypoint = ["/bin/gtfs-processor"]
+# Cloudflare Containers configuration
+[[containers]]
+class_name = "GTFSContainer"
+script_name = "ov-mcp"
+
+# Durable Objects bindings for Containers
+[[durable_objects.bindings]]
+name = "GTFS_CONTAINER"
+class_name = "GTFSContainer"
+script_name = "ov-mcp"
+
+# Migrations for Container with SQLite
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GTFSContainer"]
