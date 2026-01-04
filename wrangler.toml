@@ -9,7 +9,7 @@ binding = "GTFS_CACHE"
 id = "f1f8a39a19554b9fa733b48a1cb136c9"
 
 # Cloudflare Containers configuration
-[[containers]]
+[containers]
 binding = "GTFS_PROCESSOR"
 name = "gtfs-processor-bun"
 image = "oven/bun:latest"
