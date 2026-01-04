@@ -5,25 +5,30 @@
  * Uses createMcpHandler from agents/mcp for Streamable HTTP transport
  * Note: Local dev (wrangler dev) fails due to cloudflare:email import in agents SDK
  * Deploy with `wrangler deploy` to test
+ * 
+ * ARCHITECTURE:
+ * - Worker: Handles API requests, KV caching, and MCP protocol
+ * - GTFS_PROCESSOR Container: Handles heavy 186MB GTFS file processing
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 
-import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, GTFSDownloader } from '@ov-mcp/gtfs-parser';
+import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery } from '@ov-mcp/gtfs-parser';
 
 // Cache configuration
 const CACHE_TTL = 60 * 60 * 24; // 24 hours in seconds
 const GTFS_DATA_KEY = 'gtfs:data:v1';
 const GTFS_METADATA_KEY = 'gtfs:metadata:v1';
 
-// Memory limit threshold (in MB) for Cloudflare Worker
-const MEMORY_LIMIT_WARNING_MB = 100;
+// Container timeout (30 seconds for heavy processing)
+const CONTAINER_TIMEOUT_MS = 30000;
 
 // Environment interface for Cloudflare Worker
 export interface Env {
   GTFS_CACHE?: KVNamespace;
+  GTFS_PROCESSOR?: Fetcher; // Container binding for GTFS processing
   ENVIRONMENT?: string;
   GTFS_FEED_URL?: string;
 }
@@ -91,17 +96,82 @@ function formatRoute(route: GTFSRoute) {
 }
 
 /**
- * Estimate memory usage (rough approximation)
+ * Process GTFS data using the GTFS_PROCESSOR container
+ * The container handles the heavy 186MB file processing
  */
-function getEstimatedMemoryUsageMB(): number {
-  if (typeof performance !== 'undefined' && (performance as any).memory) {
-    return (performance as any).memory.usedJSHeapSize / (1024 * 1024);
+async function processGTFSInContainer(feedUrl: string): Promise<GTFSFeed> {
+  if (!globalEnv?.GTFS_PROCESSOR) {
+    throw new Error('GTFS_PROCESSOR container binding not configured');
   }
-  return 0;
+
+  console.log(`[Container] Sending GTFS processing request to container for: ${feedUrl}`);
+  const startTime = Date.now();
+
+  try {
+    // Create request to container with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CONTAINER_TIMEOUT_MS);
+
+    const response = await globalEnv.GTFS_PROCESSOR.fetch('http://gtfs-processor/process', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        feedUrl: feedUrl,
+        options: {
+          includeProgress: true,
+        }
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Container processing failed: ${response.status} - ${errorText}`);
+    }
+
+    const result = await response.json() as {
+      success: boolean;
+      feed?: GTFSFeed;
+      metadata?: {
+        processingTimeMs: number;
+        stopCount: number;
+        routeCount: number;
+        tripCount: number;
+        agencyCount: number;
+      };
+      error?: string;
+    };
+
+    const duration = Date.now() - startTime;
+    
+    if (!result.success || !result.feed) {
+      throw new Error(`Container processing failed: ${result.error || 'Unknown error'}`);
+    }
+
+    console.log(`[Container] Processing complete in ${duration}ms`);
+    if (result.metadata) {
+      console.log(`[Container] Stats: ${result.metadata.stopCount} stops, ${result.metadata.routeCount} routes, ${result.metadata.tripCount} trips, ${result.metadata.agencyCount} agencies`);
+    }
+
+    return result.feed;
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[Container] Error after ${duration}ms:`, error);
+    
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Container processing timed out after ${CONTAINER_TIMEOUT_MS}ms`);
+    }
+    
+    throw error;
+  }
 }
 
 /**
- * Get GTFS data from KV cache, with lazy loading on first request using streaming
+ * Get GTFS data from KV cache, with lazy loading via container on first request
  */
 async function getGTFSData(): Promise<GTFSFeed | null> {
   if (!globalEnv?.GTFS_CACHE) {
@@ -117,45 +187,21 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
       return cached as GTFSFeed;
     }
 
-    // Lazy load: download and parse GTFS data on first request using streaming
-    console.log('GTFS data not in cache, fetching from source using streaming...');
+    // Lazy load: Use container to process GTFS data on first request
+    console.log('GTFS data not in cache, delegating to container for processing...');
     const feedUrl = globalEnv.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
     
     const startTime = Date.now();
-    const initialMemory = getEstimatedMemoryUsageMB();
     
-    console.log(`[Progress] Starting GTFS download from ${feedUrl}`);
-    console.log(`[Memory] Initial usage: ${initialMemory.toFixed(2)} MB`);
+    // Delegate heavy processing to container
+    const feed = await processGTFSInContainer(feedUrl);
 
-    // Use streaming method with progress logging
-    const feed = await GTFSDownloader.fetchAndParseStream(feedUrl, {
-      onDownloadProgress: (loaded: number, total: number) => {
-        const currentMemory = getEstimatedMemoryUsageMB();
-        const percentComplete = total > 0 ? ((loaded / total) * 100).toFixed(1) : '0';
-        console.log(`[Progress] Downloading: ${(loaded / 1024 / 1024).toFixed(2)} MB / ${(total / 1024 / 1024).toFixed(2)} MB (${percentComplete}%) (Memory: ${currentMemory.toFixed(2)} MB)`);
-        
-        // Check memory limits
-        if (currentMemory > MEMORY_LIMIT_WARNING_MB) {
-          console.warn(`[Memory Warning] Usage exceeds ${MEMORY_LIMIT_WARNING_MB} MB: ${currentMemory.toFixed(2)} MB`);
-        }
-      },
-      onExtractionProgress: (filename: string, progress: number) => {
-        const currentMemory = getEstimatedMemoryUsageMB();
-        const percentComplete = (progress * 100).toFixed(1);
-        console.log(`[Progress] Extracting ${filename}: ${percentComplete}% complete (Memory: ${currentMemory.toFixed(2)} MB)`);
-      }
-    });
-
-    const endTime = Date.now();
-    const finalMemory = getEstimatedMemoryUsageMB();
-    const duration = ((endTime - startTime) / 1000).toFixed(2);
+    const duration = Date.now() - startTime;
     
-    console.log(`[Progress] GTFS parsing complete in ${duration}s`);
-    console.log(`[Memory] Final usage: ${finalMemory.toFixed(2)} MB (Delta: ${(finalMemory - initialMemory).toFixed(2)} MB)`);
-    console.log(`[Summary] Fetched: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
+    console.log(`[Worker] Total processing time: ${duration}ms`);
+    console.log(`[Worker] Storing processed data in KV cache...`);
 
     // Store in KV for future requests
-    console.log('[Progress] Storing GTFS data in KV cache...');
     await globalEnv.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
       expirationTtl: CACHE_TTL * 7, // 7 days
     });
@@ -168,25 +214,24 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
       tripCount: feed.trips.length,
       agencyCount: feed.agencies.length,
       triggeredBy: 'lazy-load',
-      processingTimeSeconds: parseFloat(duration),
-      memoryUsageMB: finalMemory,
+      processingTimeMs: duration,
+      processedBy: 'container',
     };
     await globalEnv.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
       expirationTtl: CACHE_TTL * 7,
     });
 
-    console.log('[Progress] GTFS data cached successfully');
+    console.log('[Worker] GTFS data cached successfully');
     return feed;
   } catch (error) {
-    const currentMemory = getEstimatedMemoryUsageMB();
-    console.error('[Error] Failed to fetch GTFS data:', error);
-    console.error(`[Memory] Memory usage at error: ${currentMemory.toFixed(2)} MB`);
+    console.error('[Worker] Failed to fetch GTFS data:', error);
     
-    // Check if error is memory-related
+    // Provide helpful error messages
     if (error instanceof Error) {
-      if (error.message.includes('memory') || error.message.includes('heap') || 
-          error.message.includes('allocation') || currentMemory > MEMORY_LIMIT_WARNING_MB) {
-        console.error('[Memory Error] Possible memory limit exceeded. Consider optimizing data processing or increasing worker limits.');
+      if (error.message.includes('GTFS_PROCESSOR')) {
+        console.error('[Worker] Container binding error. Ensure GTFS_PROCESSOR is configured in wrangler.toml');
+      } else if (error.message.includes('timeout')) {
+        console.error('[Worker] Container processing timed out. The 186MB GTFS file may require more time to process.');
       }
     }
     
@@ -200,7 +245,7 @@ async function getGTFSData(): Promise<GTFSFeed | null> {
 function createServer(): McpServer {
   const server = new McpServer({
     name: "ov-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
   });
 
   // Tool: Search for stops by name
@@ -373,6 +418,7 @@ async function handleUtilityRequest(request: Request, env: Env, url: URL): Promi
   if (url.pathname === '/health') {
     let metadata = null;
     let kvConfigured = false;
+    let containerConfigured = !!env.GTFS_PROCESSOR;
 
     if (env.GTFS_CACHE) {
       kvConfigured = true;
@@ -389,8 +435,13 @@ async function handleUtilityRequest(request: Request, env: Env, url: URL): Promi
         environment: env.ENVIRONMENT || 'development',
         timestamp: new Date().toISOString(),
         kv_configured: kvConfigured,
+        container_configured: containerConfigured,
         gtfs_data_available: metadata !== null,
         gtfs_metadata: metadata,
+        architecture: {
+          worker: 'Handles API requests and KV caching',
+          container: 'Processes heavy 186MB GTFS files',
+        },
       }),
       {
         status: 200,
@@ -404,7 +455,7 @@ async function handleUtilityRequest(request: Request, env: Env, url: URL): Promi
     return new Response(
       JSON.stringify({
         name: 'OV-MCP Server',
-        version: '0.2.0',
+        version: '0.3.0',
         description: 'Model Context Protocol server for Dutch public transport data',
         mcp_endpoint: '/mcp',
         endpoints: {
@@ -413,6 +464,10 @@ async function handleUtilityRequest(request: Request, env: Env, url: URL): Promi
         },
         transports: {
           streamable_http: '/mcp (recommended)',
+        },
+        architecture: {
+          worker: 'Handles API requests and KV caching',
+          container: 'GTFS_PROCESSOR handles heavy GTFS file processing',
         },
         documentation: 'https://github.com/laulauland/ov-mcp',
       }),
@@ -480,55 +535,39 @@ export default {
   },
 
   /**
-   * Scheduled handler for automatic GTFS data updates using streaming
+   * Scheduled handler for automatic GTFS data updates using container
    * Triggered by cron: every Sunday at 3am UTC
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('Scheduled GTFS update triggered at:', new Date(event.scheduledTime).toISOString());
+    console.log('[Scheduled] GTFS update triggered at:', new Date(event.scheduledTime).toISOString());
 
     if (!env.GTFS_CACHE) {
-      console.error('GTFS_CACHE KV namespace not configured - skipping scheduled update');
+      console.error('[Scheduled] GTFS_CACHE KV namespace not configured - skipping scheduled update');
+      return;
+    }
+
+    if (!env.GTFS_PROCESSOR) {
+      console.error('[Scheduled] GTFS_PROCESSOR container not configured - skipping scheduled update');
       return;
     }
 
     try {
-      // Download and parse fresh GTFS data using streaming
+      // Delegate GTFS processing to container
       const feedUrl = env.GTFS_FEED_URL || 'http://gtfs.ovapi.nl/gtfs-nl.zip';
-      console.log('[Scheduled] Downloading GTFS data from:', feedUrl);
+      console.log('[Scheduled] Delegating GTFS processing to container:', feedUrl);
 
       const startTime = Date.now();
-      const initialMemory = getEstimatedMemoryUsageMB();
-      console.log(`[Scheduled][Memory] Initial usage: ${initialMemory.toFixed(2)} MB`);
 
-      // Use streaming method with progress logging
-      const feed = await GTFSDownloader.fetchAndParseStream(feedUrl, {
-        onDownloadProgress: (loaded: number, total: number) => {
-          const currentMemory = getEstimatedMemoryUsageMB();
-          const percentComplete = total > 0 ? ((loaded / total) * 100).toFixed(1) : '0';
-          console.log(`[Scheduled][Progress] Downloading: ${(loaded / 1024 / 1024).toFixed(2)} MB / ${(total / 1024 / 1024).toFixed(2)} MB (${percentComplete}%) (Memory: ${currentMemory.toFixed(2)} MB)`);
-          
-          // Check memory limits
-          if (currentMemory > MEMORY_LIMIT_WARNING_MB) {
-            console.warn(`[Scheduled][Memory Warning] Usage exceeds ${MEMORY_LIMIT_WARNING_MB} MB: ${currentMemory.toFixed(2)} MB`);
-          }
-        },
-        onExtractionProgress: (filename: string, progress: number) => {
-          const currentMemory = getEstimatedMemoryUsageMB();
-          const percentComplete = (progress * 100).toFixed(1);
-          console.log(`[Scheduled][Progress] Extracting ${filename}: ${percentComplete}% complete (Memory: ${currentMemory.toFixed(2)} MB)`);
-        }
-      });
+      // Use container for heavy processing
+      const feed = await processGTFSInContainer(feedUrl);
 
-      const endTime = Date.now();
-      const finalMemory = getEstimatedMemoryUsageMB();
-      const duration = ((endTime - startTime) / 1000).toFixed(2);
+      const duration = Date.now() - startTime;
       
-      console.log(`[Scheduled][Progress] GTFS parsing complete in ${duration}s`);
-      console.log(`[Scheduled][Memory] Final usage: ${finalMemory.toFixed(2)} MB (Delta: ${(finalMemory - initialMemory).toFixed(2)} MB)`);
-      console.log(`[Scheduled][Summary] Downloaded: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
+      console.log(`[Scheduled] Container processing complete in ${duration}ms`);
+      console.log(`[Scheduled] Received: ${feed.stops.length} stops, ${feed.routes.length} routes, ${feed.trips.length} trips, ${feed.agencies.length} agencies`);
 
       // Store in KV
-      console.log('[Scheduled][Progress] Storing GTFS data in KV cache...');
+      console.log('[Scheduled] Storing processed data in KV cache...');
       await env.GTFS_CACHE.put(GTFS_DATA_KEY, JSON.stringify(feed), {
         expirationTtl: CACHE_TTL * 7, // 7 days for scheduled updates
       });
@@ -541,24 +580,22 @@ export default {
         tripCount: feed.trips.length,
         agencyCount: feed.agencies.length,
         triggeredBy: 'scheduled',
-        processingTimeSeconds: parseFloat(duration),
-        memoryUsageMB: finalMemory,
+        processingTimeMs: duration,
+        processedBy: 'container',
       };
       await env.GTFS_CACHE.put(GTFS_METADATA_KEY, JSON.stringify(metadata), {
         expirationTtl: CACHE_TTL * 7,
       });
 
-      console.log('[Scheduled][Success] GTFS data updated successfully:', metadata);
+      console.log('[Scheduled] GTFS data updated successfully:', metadata);
     } catch (error) {
-      const currentMemory = getEstimatedMemoryUsageMB();
-      console.error('[Scheduled][Error] Failed to update GTFS data:', error);
-      console.error(`[Scheduled][Memory] Memory usage at error: ${currentMemory.toFixed(2)} MB`);
+      console.error('[Scheduled] Failed to update GTFS data:', error);
       
-      // Check if error is memory-related
       if (error instanceof Error) {
-        if (error.message.includes('memory') || error.message.includes('heap') || 
-            error.message.includes('allocation') || currentMemory > MEMORY_LIMIT_WARNING_MB) {
-          console.error('[Scheduled][Memory Error] Possible memory limit exceeded. Consider optimizing data processing or increasing worker limits.');
+        if (error.message.includes('GTFS_PROCESSOR')) {
+          console.error('[Scheduled] Container binding error. Ensure GTFS_PROCESSOR is configured in wrangler.toml');
+        } else if (error.message.includes('timeout')) {
+          console.error('[Scheduled] Container processing timed out. Consider increasing CONTAINER_TIMEOUT_MS.');
         }
       }
       
