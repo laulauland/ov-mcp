@@ -16,6 +16,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
+import { DurableObject } from "cloudflare:workers";
 
 import { GTFSFeed, GTFSStop, GTFSRoute } from '@ov-mcp/gtfs-parser';
 
@@ -26,6 +27,44 @@ const CONTAINER_TIMEOUT_MS = 180000; // 3 minutes for container operations
 export interface Env {
   GTFS_CONTAINER: DurableObjectNamespace; // Durable Object namespace binding
   ENVIRONMENT?: string;
+}
+
+/**
+ * GTFSContainer Durable Object
+ * Handles all GTFS processing and forwards requests to localhost:8080
+ */
+export class GTFSContainer extends DurableObject {
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env);
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    // Forward all requests to localhost:8080
+    const url = new URL(request.url);
+    const forwardUrl = `http://localhost:8080${url.pathname}${url.search}`;
+    
+    try {
+      const response = await fetch(forwardUrl, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+      });
+      
+      return response;
+    } catch (error) {
+      console.error('[GTFSContainer] Error forwarding to localhost:8080:', error);
+      return new Response(
+        JSON.stringify({
+          error: 'Failed to forward request',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        }),
+        {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+  }
 }
 
 /**
