@@ -7,16 +7,15 @@
  * Deploy with `wrangler deploy` to test
  * 
  * ARCHITECTURE:
- * - Worker: Handles API requests using Cloudflare Containers pattern
- * - Container: Manages GTFS processing, KV caching, and dependencies
- * - Durable Object: Manages GTFS state with SQL storage
+ * - Worker: Handles API requests
+ * - Container: Simple service binding pattern for dependency injection
+ * - KV Storage: Manages GTFS caching and metadata
  * - Uses streaming and memory-efficient processing for large GTFS files
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
-import { DurableObject } from "cloudflare:workers";
 
 import { GTFSFeed, GTFSStop, GTFSRoute, GTFSQuery, GTFSDownloader } from '@ov-mcp/gtfs-parser';
 
@@ -35,123 +34,25 @@ const RETRY_DELAY_MS = 2000;
 // Environment interface for Cloudflare Worker
 export interface Env {
   GTFS_CACHE?: KVNamespace;
-  GTFS_STATE?: DurableObjectNamespace;
   ENVIRONMENT?: string;
   GTFS_FEED_URL?: string;
 }
 
 /**
- * GTFSState Durable Object
- * Manages GTFS processing state with SQL storage for persistence
+ * Container interface - acts as a service binding
+ * This provides a clean abstraction for accessing GTFS services
  */
-export class GTFSState extends DurableObject {
-  /**
-   * Initialize the Durable Object and set up SQL tables
-   */
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    
-    // Initialize SQL tables for GTFS state
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS gtfs_metadata (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
-  }
-
-  /**
-   * Store GTFS metadata
-   */
-  async setMetadata(key: string, value: any): Promise<void> {
-    const now = Date.now();
-    const valueStr = JSON.stringify(value);
-    
-    this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO gtfs_metadata (key, value, updated_at) VALUES (?, ?, ?)`,
-      key,
-      valueStr,
-      now
-    );
-  }
-
-  /**
-   * Get GTFS metadata
-   */
-  async getMetadata(key: string): Promise<any | null> {
-    const result = this.ctx.storage.sql.exec(
-      `SELECT value FROM gtfs_metadata WHERE key = ?`,
-      key
-    ).toArray();
-
-    if (result.length === 0) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(result[0].value as string);
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Get all metadata
-   */
-  async getAllMetadata(): Promise<Record<string, any>> {
-    const results = this.ctx.storage.sql.exec(
-      `SELECT key, value FROM gtfs_metadata`
-    ).toArray();
-
-    const metadata: Record<string, any> = {};
-    for (const row of results) {
-      try {
-        metadata[row.key as string] = JSON.parse(row.value as string);
-      } catch {
-        metadata[row.key as string] = row.value;
-      }
-    }
-
-    return metadata;
-  }
-
-  /**
-   * Handle fetch requests to this Durable Object
-   */
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    
-    if (url.pathname === '/metadata' && request.method === 'GET') {
-      const metadata = await this.getAllMetadata();
-      return new Response(JSON.stringify(metadata), {
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    if (url.pathname === '/metadata' && request.method === 'POST') {
-      const body = await request.json() as { key: string; value: any };
-      await this.setMetadata(body.key, body.value);
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    if (url.pathname === '/health') {
-      return new Response(JSON.stringify({ status: 'ok', type: 'GTFSState' }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    return new Response('Not Found', { status: 404 });
-  }
+interface IGTFSContainer {
+  getGTFSData(): Promise<GTFSFeed | null>;
+  updateGTFSData(): Promise<{ success: boolean; metadata?: any; error?: string }>;
+  getMetadata(): Promise<any | null>;
 }
 
 /**
- * Container class for managing GTFS processing and dependencies
- * Follows the Cloudflare Containers pattern for better testability and organization
+ * Simple Container implementation for managing GTFS services
+ * Accessed as a service binding rather than complex Durable Object patterns
  */
-class GTFSContainer {
+class GTFSContainer implements IGTFSContainer {
   private env: Env;
   private feedCache: GTFSFeed | null = null;
 
@@ -531,16 +432,17 @@ function formatRoute(route: GTFSRoute) {
 }
 
 /**
- * Get or create container instance for the current request
+ * Get container instance - accessed as a service binding
+ * Creates a new container for each request context
  */
-function getContainer(env: Env): GTFSContainer {
+function getContainer(env: Env): IGTFSContainer {
   return new GTFSContainer(env);
 }
 
 /**
  * Create the MCP Server with all tools registered
  */
-function createServer(container: GTFSContainer): McpServer {
+function createServer(container: IGTFSContainer): McpServer {
   const server = new McpServer({
     name: "ov-mcp",
     version: "0.3.0",
@@ -695,7 +597,7 @@ function createServer(container: GTFSContainer): McpServer {
 /**
  * Utility endpoints handler (health check and API info)
  */
-async function handleUtilityRequest(request: Request, container: GTFSContainer, env: Env, url: URL): Promise<Response | null> {
+async function handleUtilityRequest(request: Request, container: IGTFSContainer, env: Env, url: URL): Promise<Response | null> {
   // Health check endpoint
   if (url.pathname === '/health') {
     const metadata = await container.getMetadata();
@@ -710,8 +612,8 @@ async function handleUtilityRequest(request: Request, container: GTFSContainer, 
         gtfs_data_available: metadata !== null,
         gtfs_metadata: metadata,
         processing: {
-          mode: 'direct-worker-container',
-          pattern: 'cloudflare-containers',
+          mode: 'service-binding-container',
+          pattern: 'simple-container',
           max_download_size_mb: MAX_DOWNLOAD_SIZE / 1024 / 1024,
           download_timeout_ms: DOWNLOAD_TIMEOUT_MS,
           processing_timeout_ms: PROCESSING_TIMEOUT_MS,
@@ -741,9 +643,9 @@ async function handleUtilityRequest(request: Request, container: GTFSContainer, 
           streamable_http: '/mcp (recommended)',
         },
         processing: {
-          mode: 'direct-worker-container',
-          pattern: 'cloudflare-containers',
-          description: 'GTFS processing happens directly in Worker using Container pattern for dependency management',
+          mode: 'service-binding-container',
+          pattern: 'simple-container',
+          description: 'GTFS processing uses lightweight container pattern accessed as service binding',
         },
         documentation: 'https://github.com/laulauland/ov-mcp',
       }),
@@ -755,13 +657,13 @@ async function handleUtilityRequest(request: Request, container: GTFSContainer, 
 }
 
 /**
- * Main Worker export using Cloudflare Containers pattern
+ * Main Worker export using simple container service binding pattern
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Get container instance for this request
+    // Get container instance as a service binding for this request
     const container = getContainer(env);
 
     // Handle CORS preflight
@@ -837,7 +739,7 @@ export default {
       return;
     }
 
-    // Get container instance for scheduled job
+    // Get container instance as a service binding for scheduled job
     const container = getContainer(env);
 
     try {
