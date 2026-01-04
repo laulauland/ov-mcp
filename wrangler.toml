@@ -25,7 +25,7 @@ enabled = true
 # Cloudflare Containers (Beta) - GTFS Processor
 [[containers]]
 name = "gtfs-processor"
-image = "ghcr.io/laulauland/gtfs-processor:latest"
+dockerfile = "./Dockerfile"
 entrypoint = ["/bin/gtfs-processor"]
 
 [[containers.bindings]]
