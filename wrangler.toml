@@ -8,13 +8,9 @@ compatibility_flags = ["nodejs_compat"]
 binding = "GTFS_CACHE"
 id = "f1f8a39a19554b9fa733b48a1cb136c9"
 
-# Cloudflare Containers for GTFS processing
-[[services]]
+# Cloudflare Containers configuration
+[[containers]]
 binding = "GTFS_PROCESSOR"
-service = "gtfs-processor-bun"
-
-# Container configuration
-[container]
 name = "gtfs-processor-bun"
 image = "oven/bun:latest"
 command = ["bun", "run", "process-gtfs.ts"]
