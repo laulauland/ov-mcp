@@ -8,18 +8,6 @@ compatibility_flags = ["nodejs_compat"]
 binding = "GTFS_CACHE"
 id = "f1f8a39a19554b9fa733b48a1cb136c9"
 
-# Cloudflare Containers configuration
-[containers]
-name = "gtfs-processor-bun"
-image = "oven/bun:latest"
-command = ["bun", "run", "start"]
-instance_type = 'standard-3'
-
-[[durable_objects.bindings]]
-name = "GTFS_PROCESSOR"
-class_name = "gtfs-processor-bun"
-script_name = "ov-mcp"
-
 # Environment variables
 [vars]
 ENVIRONMENT = "production"
@@ -33,18 +21,3 @@ crons = ["0 3 * * SUN"]  # Every Sunday at 3am UTC
 # Observability
 [observability]
 enabled = true
-
-# Migration v1: Original creation of OVMcpAgent (already applied)
-[[migrations]]
-tag = "v1"
-new_classes = ["OVMcpAgent"]
-
-# Migration v2: Delete OVMcpAgent since we now use createMcpHandler
-[[migrations]]
-tag = "v2"
-deleted_classes = ["OVMcpAgent"]
-
-# Migration v3: Add GtfsProcessorContainer class
-[[migrations]]
-tag = "v3"
-new_classes = ["GtfsProcessorContainer"]
