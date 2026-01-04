@@ -25,6 +25,19 @@
         "wrangler": "^3.94.0",
       },
     },
+    "packages/gtfs-container": {
+      "name": "@ov-mcp/gtfs-container",
+      "version": "0.1.0",
+      "dependencies": {
+        "@types/bun": "latest",
+      },
+      "devDependencies": {
+        "bun-types": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5.0.0",
+      },
+    },
     "packages/gtfs-parser": {
       "name": "@ov-mcp/gtfs-parser",
       "version": "0.1.0",
@@ -193,6 +206,8 @@
     "@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 
     "@ov-mcp/cloudflare-worker": ["@ov-mcp/cloudflare-worker@workspace:packages/cloudflare-worker"],
+
+    "@ov-mcp/gtfs-container": ["@ov-mcp/gtfs-container@workspace:packages/gtfs-container"],
 
     "@ov-mcp/gtfs-parser": ["@ov-mcp/gtfs-parser@workspace:packages/gtfs-parser"],
 
