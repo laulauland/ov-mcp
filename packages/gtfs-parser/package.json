@@ -9,7 +9,9 @@
     "dev": "bun run --watch src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun && tsc --emitDeclarationOnly",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "example:streaming": "bun run examples/streaming-example.ts",
+    "example:streaming:memory": "bun run --expose-gc examples/streaming-example.ts"
   },
   "dependencies": {
     "papaparse": "^5.4.1",
