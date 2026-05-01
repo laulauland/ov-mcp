@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+// MCP stdio transport reserves stdout for JSON-RPC. Redirect all logs to stderr.
+console.log = (...args: unknown[]) => console.error(...args);
+console.info = (...args: unknown[]) => console.error(...args);
+console.warn = (...args: unknown[]) => console.error(...args);
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
